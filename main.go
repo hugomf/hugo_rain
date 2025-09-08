@@ -1,5 +1,3 @@
-// main.go
-// Terminal Matrix rain – Final Version merging the best of both.
 package main
 
 import (
@@ -18,7 +16,7 @@ import (
 	"unsafe"
 )
 
-// ---------- CONFIG ----------------------------------------------------------
+// ---------- CONFIG ----------
 
 type Config struct {
 	BaseColor Color
@@ -27,7 +25,41 @@ type Config struct {
 	CharSet   []rune
 }
 
-func ParseFlags() (*Config, error) {
+// ---------- CONFIG DATA ----------
+
+type ConfigData struct {
+	ColorThemes map[string]Color
+	CharSets    map[string][]rune
+}
+
+var defaultConfigData = ConfigData{
+	ColorThemes: map[string]Color{
+		"green":  {0, 255, 0},
+		"amber":  {255, 191, 0},
+		"red":    {255, 0, 0},
+		"orange": {255, 165, 0},
+		"blue":   {0, 150, 255},
+		"purple": {128, 0, 255},
+		"cyan":   {0, 255, 255},
+		"pink":   {255, 20, 147},
+		"white":  {255, 255, 255},
+	},
+	CharSets: map[string][]rune{
+		"matrix":   []rune("λｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"),
+		"binary":   []rune("01"),
+		"symbols":  []rune("!@#$%^&*()_+-=[]{}|;':\",./<>?"),
+		"emojis":   []rune("😂😅😊🔥💯✨🚀🎉🌟🌈"),
+		"kanji":    []rune("書道日本漢字文化侍"),
+		"greek":    []rune("αβγδεζηθικλμνξοπρστυφχψω"),
+		"cyrillic": []rune("абвгдежзийклмнопрстуфхцчшщъыьэюя"),
+	},
+}
+
+// ---------- CONFIG PARSER ----------
+
+type ConfigParser struct{}
+
+func (p *ConfigParser) Parse() (*Config, error) {
 	var (
 		colorName   string
 		fps         int
@@ -43,10 +75,10 @@ func ParseFlags() (*Config, error) {
 	flag.Parse()
 
 	if listOptions {
-		listAndExit()
+		p.listAndExit()
 	}
 
-	baseColor, ok := colorThemes[strings.ToLower(colorName)]
+	baseColor, ok := defaultConfigData.ColorThemes[strings.ToLower(colorName)]
 	if !ok {
 		return nil, fmt.Errorf("unknown color '%s'", colorName)
 	}
@@ -57,7 +89,7 @@ func ParseFlags() (*Config, error) {
 		return nil, fmt.Errorf("density out of range 0.1-3.0 (got %.1f)", density)
 	}
 
-	charSet, err := resolveCharSet(charSetFlag)
+	charSet, err := p.resolveCharSet(charSetFlag)
 	if err != nil {
 		return nil, err
 	}
@@ -70,14 +102,14 @@ func ParseFlags() (*Config, error) {
 	}, nil
 }
 
-func listAndExit() {
+func (p *ConfigParser) listAndExit() {
 	fmt.Println("Available options:")
 	fmt.Println("Colors:")
-	for n := range colorThemes {
+	for n := range defaultConfigData.ColorThemes {
 		fmt.Println(" ", n)
 	}
 	fmt.Println("\nCharacter Sets:")
-	for n := range matrixCharSets {
+	for n := range defaultConfigData.CharSets {
 		fmt.Println(" ", n)
 	}
 	fmt.Println("\nFPS: 1-60")
@@ -85,8 +117,8 @@ func listAndExit() {
 	os.Exit(0)
 }
 
-func resolveCharSet(flag string) ([]rune, error) {
-	if set, ok := matrixCharSets[strings.ToLower(flag)]; ok {
+func (p *ConfigParser) resolveCharSet(flag string) ([]rune, error) {
+	if set, ok := defaultConfigData.CharSets[strings.ToLower(flag)]; ok {
 		return set, nil
 	}
 	if flag == "" {
@@ -95,15 +127,9 @@ func resolveCharSet(flag string) ([]rune, error) {
 	return []rune(flag), nil
 }
 
-// ---------- COLOR -----------------------------------------------------------
+// ---------- COLOR -----------
 
 type Color struct{ R, G, B uint8 }
-
-var colorThemes = map[string]Color{
-	"green": {0, 255, 0}, "amber": {255, 191, 0}, "red": {255, 0, 0},
-	"orange": {255, 165, 0}, "blue": {0, 150, 255}, "purple": {128, 0, 255},
-	"cyan": {0, 255, 255}, "pink": {255, 20, 147}, "white": {255, 255, 255},
-}
 
 func brighten(c Color, f float64) Color {
 	return Color{
@@ -114,40 +140,41 @@ func brighten(c Color, f float64) Color {
 }
 
 func dim(c Color, f float64) Color {
-	return Color{R: uint8(float64(c.R) * f), G: uint8(float64(c.G) * f), B: uint8(float64(c.B) * f)}
+	return Color{
+		R: uint8(float64(c.R) * f),
+		G: uint8(float64(c.G) * f),
+		B: uint8(float64(c.B) * f),
+	}
 }
 
-// ---------- TERMINAL --------------------------------------------------------
+// ---------- TERMINAL INTERFACE ----------
 
-type TermSizeFunc func() (h, w int, err error)
+type Terminal interface {
+	Setup()
+	Restore()
+	GetSize() (h, w int, err error)
+}
 
-func GetTermSize() (h, w int, err error) {
+type StdTerminal struct{}
+
+func (t *StdTerminal) Setup() {
+	fmt.Print("\x1b[?1049h\x1b[?25l")
+}
+
+func (t *StdTerminal) Restore() {
+	fmt.Print("\x1b[?25h\x1b[?1049l")
+}
+
+func (t *StdTerminal) GetSize() (h, w int, err error) {
 	var sz struct{ rows, cols, x, y uint16 }
-	_, _, e := syscall.Syscall(syscall.SYS_IOCTL,
-		uintptr(syscall.Stdout), uintptr(syscall.TIOCGWINSZ),
-		uintptr(unsafe.Pointer(&sz)))
+	_, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(syscall.Stdout), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&sz)))
 	if e != 0 {
 		return 0, 0, e
 	}
 	return int(sz.rows), int(sz.cols), nil
 }
 
-func SetupTerminal()   { fmt.Print("\x1b[?1049h\x1b[?25l") }
-func RestoreTerminal() { fmt.Print("\x1b[?25h\x1b[?1049l") }
-
-// ---------- CHARACTER SETS --------------------------------------------------
-
-var matrixCharSets = map[string][]rune{
-	"matrix":   []rune("λｱｲｳｴｵｶｷｸｹｺｻｼｽｾｿﾀﾁﾂﾃﾄﾅﾆﾇﾈﾉﾊﾋﾌﾍﾎﾏﾐﾑﾒﾓﾔﾕﾖﾗﾘﾙﾚﾛﾜﾝ"),
-	"binary":   []rune("01"),
-	"symbols":  []rune("!@#$%^&*()_+-=[]{}|;':\",./<>?"),
-	"emojis":   []rune("😂😅😊🔥💯✨🚀🎉🌟🌈"),
-	"kanji":    []rune("書道日本漢字文化侍"),
-	"greek":    []rune("αβγδεζηθικλμνξοπρστυφχψω"),
-	"cyrillic": []rune("абвгдежзийклмнопрстуфхцчшщъыьэюя"),
-}
-
-// ---------- DROP LOGIC ------------------------------------------------------
+// ---------- DROP LOGIC ----------
 
 type Drop struct {
 	pos    int
@@ -179,7 +206,71 @@ func (f *randomFactory) CreateDrop(h int) Drop {
 	}
 }
 
-// ---------- ENGINE ----------------------------------------------------------
+// ---------- DROP CONTROLLER ----------
+
+type DropController struct {
+	randGen *rand.Rand
+	density float64
+	charSet []rune
+	factory DropFactory
+}
+
+func NewDropController(r *rand.Rand, density float64, charSet []rune, factory DropFactory) *DropController {
+	return &DropController{randGen: r, density: density, charSet: charSet, factory: factory}
+}
+
+func (dc *DropController) UpdateDrop(d *Drop, height int) {
+	if !d.active {
+		chance := 0.005 * dc.density
+		if dc.density > 1.0 {
+			chance = 0.005 + (dc.density-1.0)*0.02
+		}
+		if dc.randGen.Float64() < chance {
+			d.active = true
+			d.pos = 0
+			d.length = dc.randGen.Intn(12) + 8
+			d.char = dc.factory.CreateDrop(height).char
+		}
+		return
+	}
+	d.pos++
+	if d.pos-d.length > height {
+		d.pos = -d.length
+		d.length = dc.randGen.Intn(12) + 8
+		d.char = dc.factory.CreateDrop(height).char
+		pause := 0.15 - dc.density*0.05
+		if dc.density > 1.0 {
+			pause = 0.05 - (dc.density-1.0)*0.02
+		}
+		if pause < 0.01 {
+			pause = 0.01
+		}
+		if dc.randGen.Float64() < pause {
+			d.active = false
+		}
+	}
+}
+
+func (dc *DropController) DrawDrop(d *Drop, f *Frame, col int, trailColors []Color) {
+	if !d.active {
+		return
+	}
+	tail := d.pos - d.length
+	for row := tail; row <= d.pos; row++ {
+		if row >= 0 && row < f.height {
+			f.chars[row][col] = d.char
+			f.isBg[row][col] = false
+			dist := d.pos - row
+			idx := int(float64(dist) / float64(d.length) * float64(len(trailColors)))
+			if idx >= len(trailColors) {
+				idx = len(trailColors) - 1
+			}
+			f.colors[row][col] = trailColors[idx]
+		}
+	}
+}
+
+// ---------- ENGINE ----------
 
 type Engine struct {
 	height, width int
@@ -188,21 +279,21 @@ type Engine struct {
 	density       float64
 	drops         [][]Drop
 	randGen       *rand.Rand
-	factory       DropFactory
-	sizeFn        TermSizeFunc
-	frameBuffer   *Frame // Holds the reusable frame buffer
+	dropCtrl      *DropController
+	term          Terminal
+	frameBuffer   *Frame
 }
 
-func NewEngine(cfg *Config, r *rand.Rand, factory DropFactory, sizeFn TermSizeFunc) *Engine {
+func NewEngine(cfg *Config, r *rand.Rand, factory DropFactory, term Terminal) *Engine {
 	e := &Engine{
 		height:      0,
 		width:       0,
 		baseColor:   cfg.BaseColor,
 		density:     cfg.Density,
 		randGen:     r,
-		factory:     factory,
-		sizeFn:      sizeFn,
-		frameBuffer: nil, // Will be initialized on first resize
+		dropCtrl:    NewDropController(r, cfg.Density, cfg.CharSet, factory),
+		term:        term,
+		frameBuffer: nil,
 	}
 	e.trailColors = e.calcTrailColors(6)
 	return e
@@ -230,17 +321,17 @@ func (e *Engine) Resize(h, w int) {
 				newDrops[i] = newDrops[i][:n]
 			} else if len(newDrops[i]) < n {
 				for j := len(newDrops[i]); j < n; j++ {
-					newDrops[i] = append(newDrops[i], e.factory.CreateDrop(e.height))
+					newDrops[i] = append(newDrops[i], e.dropCtrl.factory.CreateDrop(e.height))
 				}
 			}
 		} else {
 			for j := 0; j < n; j++ {
-				newDrops[i] = append(newDrops[i], e.factory.CreateDrop(e.height))
+				newDrops[i] = append(newDrops[i], e.dropCtrl.factory.CreateDrop(e.height))
 			}
 		}
 	}
 	e.drops = newDrops
-	e.frameBuffer = NewFrame(h, w) // Reallocate the buffer when resizing
+	e.frameBuffer = NewFrame(h, w)
 }
 
 func (e *Engine) calcTrailColors(steps int) []Color {
@@ -254,72 +345,20 @@ func (e *Engine) calcTrailColors(steps int) []Color {
 }
 
 func (e *Engine) NextFrame() *Frame {
-	if h, w, err := e.sizeFn(); err == nil && (h != e.height || w != e.width) {
+	if h, w, err := e.term.GetSize(); err == nil && (h != e.height || w != e.width) {
 		e.Resize(h, w)
 	}
-
 	e.frameBuffer.clear()
 	for col, dd := range e.drops {
 		for i := range dd {
-			e.updateDrop(&dd[i])
-			e.drawDrop(&dd[i], e.frameBuffer, col)
+			e.dropCtrl.UpdateDrop(&dd[i], e.height)
+			e.dropCtrl.DrawDrop(&dd[i], e.frameBuffer, col, e.trailColors)
 		}
 	}
 	return e.frameBuffer
 }
 
-func (e *Engine) updateDrop(d *Drop) {
-	if !d.active {
-		chance := 0.005 * e.density
-		if e.density > 1.0 {
-			chance = 0.005 + (e.density-1.0)*0.02
-		}
-		if e.randGen.Float64() < chance {
-			d.active = true
-			d.pos = 0
-			d.length = e.randGen.Intn(12) + 8
-			d.char = e.factory.CreateDrop(e.height).char
-		}
-		return
-	}
-	d.pos++
-	if d.pos-d.length > e.height {
-		d.pos = -d.length
-		d.length = e.randGen.Intn(12) + 8
-		d.char = e.factory.CreateDrop(e.height).char
-		pause := 0.15 - e.density*0.05
-		if e.density > 1.0 {
-			pause = 0.05 - (e.density-1.0)*0.02
-		}
-		if pause < 0.01 {
-			pause = 0.01
-		}
-		if e.randGen.Float64() < pause {
-			d.active = false
-		}
-	}
-}
-
-func (e *Engine) drawDrop(d *Drop, f *Frame, col int) {
-	if !d.active {
-		return
-	}
-	tail := d.pos - d.length
-	for row := tail; row <= d.pos; row++ {
-		if row >= 0 && row < f.height {
-			f.chars[row][col] = d.char
-			f.isBg[row][col] = false
-			dist := d.pos - row
-			idx := int(float64(dist) / float64(d.length) * float64(len(e.trailColors)))
-			if idx >= len(e.trailColors) {
-				idx = len(e.trailColors) - 1
-			}
-			f.colors[row][col] = e.trailColors[idx]
-		}
-	}
-}
-
-// ---------- FRAME -----------------------------------------------------------
+// ---------- FRAME -----------
 
 type Frame struct {
 	chars  [][]rune
@@ -354,7 +393,7 @@ func (f *Frame) clear() {
 	}
 }
 
-// ---------- RENDERER --------------------------------------------------------
+// ---------- RENDERER --------
 
 type Screen struct {
 	out           io.Writer
@@ -452,7 +491,7 @@ func (s *Screen) copyFrame(src, dst *Frame) {
 	}
 }
 
-// ---------- UTILS -----------------------------------------------------------
+// ---------- UTILS -----------
 
 func min[T int | float64](a, b T) T {
 	if a < b {
@@ -461,10 +500,11 @@ func min[T int | float64](a, b T) T {
 	return b
 }
 
-// ---------- MAIN ------------------------------------------------------------
+// ---------- MAIN -----------
 
 func main() {
-	cfg, err := ParseFlags()
+	parser := &ConfigParser{}
+	cfg, err := parser.Parse()
 	if err != nil {
 		fmt.Fprintln(os.Stderr, "Error:", err)
 		os.Exit(1)
@@ -473,19 +513,19 @@ func main() {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 
-	h, w, err := GetTermSize()
+	term := &StdTerminal{}
+	h, w, err := term.GetSize()
 	if err != nil || h <= 0 || w <= 0 {
 		fmt.Fprintln(os.Stderr, "Cannot get terminal size:", err)
 		os.Exit(1)
 	}
-	SetupTerminal()
-	defer RestoreTerminal()
+	term.Setup()
+	defer term.Restore()
 
 	factory := NewRandomFactory(rng, h, cfg.CharSet)
-	engine := NewEngine(cfg, rng, factory, GetTermSize)
+	engine := NewEngine(cfg, rng, factory, term)
 	screen := NewScreen(os.Stdout)
 
-	// Initial setup
 	engine.Resize(h, w)
 
 	frameDuration := time.Second / time.Duration(cfg.FPS)
