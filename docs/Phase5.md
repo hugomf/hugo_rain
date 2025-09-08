@@ -31,7 +31,7 @@ The engine managed all drops in a single, flat slice.
 
 ```mermaid
 graph TD
-    A[MatrixEngine] --> B[drops: []Drop];
+    A[MatrixEngine] --> B[drops: Drop];
     B --> C(Drop 1);
     B --> D(Drop 2);
     B --> E(Drop N);
@@ -44,7 +44,7 @@ The engine now manages a slice of slices, where each inner slice represents a co
 
 ```mermaid
 graph TD
-    A[MatrixEngine] --> B[drops: [][]Drop];
+    A[MatrixEngine] --> B[drops: Drop];
     B --> C(Column 1);
     B --> D(Column 2);
     B --> E(Column N);

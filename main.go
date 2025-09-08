@@ -72,7 +72,7 @@ func (f *RandomDropFactory) CreateDrop(screenHeight int) Drop {
 // MatrixEngine manages the entire animation logic.
 type MatrixEngine struct {
 	height, width int
-	drops         []Drop
+	drops         [][]Drop // Changed from []Drop to [][]Drop
 	baseColor     Color
 	trailColors   []Color
 	density       float64
@@ -97,16 +97,20 @@ func NewMatrixEngine(ctx context.Context, height, width int, baseColor Color, de
 	return engine
 }
 
-// createDrops initializes the drop streams.
-func (me *MatrixEngine) createDrops(count int) []Drop {
-	totalDrops := int(float64(count) * me.density)
-	if totalDrops < count {
-		totalDrops = count
-	}
-
-	drops := make([]Drop, totalDrops)
+// createDrops initializes the drop streams for each column.
+func (me *MatrixEngine) createDrops(count int) [][]Drop {
+	drops := make([][]Drop, count)
 	for i := range drops {
-		drops[i] = me.dropFactory.CreateDrop(me.height)
+		dropsPerColumn := int(me.density)
+		if me.randGen.Float64() < (me.density - float64(dropsPerColumn)) {
+			dropsPerColumn++
+		}
+		if dropsPerColumn < 1 {
+			dropsPerColumn = 1
+		}
+		for j := 0; j < dropsPerColumn; j++ {
+			drops[i] = append(drops[i], me.dropFactory.CreateDrop(me.height))
+		}
 	}
 	return drops
 }
@@ -121,9 +125,22 @@ func (me *MatrixEngine) generateFrame() Frame {
 	}
 
 	frame := NewFrame(me.height, me.width)
+	
+	// Iterate through each column and its slice of drops.
+	for col, dropsInCol := range me.drops {
+		for i := range dropsInCol {
+			dropsInCol[i].update(me.height, me.density, me.randGen)
+			// Pass a pointer to the frame here with the & operator
+			dropsInCol[i].draw(&frame, col, me.trailColors)
+		}
+	}
+	return frame
+}
 
-	dropIndex := 0
-	for col := 0; col < me.width; col++ {
+// resizeDrops adjusts the number of columns and drops on a terminal resize.
+func (me *MatrixEngine) resizeDrops(newWidth, screenHeight int) [][]Drop {
+	newDrops := make([][]Drop, newWidth)
+	for i := 0; i < newWidth; i++ {
 		dropsPerColumn := int(me.density)
 		if me.randGen.Float64() < (me.density - float64(dropsPerColumn)) {
 			dropsPerColumn++
@@ -132,31 +149,22 @@ func (me *MatrixEngine) generateFrame() Frame {
 			dropsPerColumn = 1
 		}
 
-		for i := 0; i < dropsPerColumn; i++ {
-			if dropIndex < len(me.drops) {
-				me.drops[dropIndex].update(me.height, me.density, me.randGen)
-				me.drops[dropIndex].draw(&frame, col, me.trailColors)
-				dropIndex++
+		if i < len(me.drops) {
+			newDrops[i] = me.drops[i]
+			if len(newDrops[i]) > dropsPerColumn {
+				newDrops[i] = newDrops[i][:dropsPerColumn]
+			} else if len(newDrops[i]) < dropsPerColumn {
+				for j := len(newDrops[i]); j < dropsPerColumn; j++ {
+					newDrops[i] = append(newDrops[i], me.dropFactory.CreateDrop(screenHeight))
+				}
+			}
+		} else {
+			for j := 0; j < dropsPerColumn; j++ {
+				newDrops[i] = append(newDrops[i], me.dropFactory.CreateDrop(screenHeight))
 			}
 		}
 	}
-	return frame
-}
-
-// resizeDrops adjusts the number of drops on a terminal resize.
-func (me *MatrixEngine) resizeDrops(newWidth, screenHeight int) []Drop {
-	newTotalDrops := int(float64(newWidth) * me.density)
-	if newTotalDrops < newWidth {
-		newTotalDrops = newWidth
-	}
-	if newTotalDrops > len(me.drops) {
-		for i := len(me.drops); i < newTotalDrops; i++ {
-			me.drops = append(me.drops, me.dropFactory.CreateDrop(screenHeight))
-		}
-	} else if newTotalDrops < len(me.drops) {
-		me.drops = me.drops[:newTotalDrops]
-	}
-	return me.drops
+	return newDrops
 }
 
 // calculateTrailColors generates the color gradient.
@@ -233,7 +241,7 @@ type Frame struct {
 	colors       [][]Color
 	isBackground [][]bool
 	height       int
-	width        int
+	width       int
 }
 
 // NewFrame creates a new Frame instance.
@@ -250,6 +258,8 @@ func NewFrame(height, width int) Frame {
 		f.colors[i] = make([]Color, width)
 		f.isBackground[i] = make([]bool, width)
 		for j := 0; j < width; j++ {
+			// This is the fix: initialize the frame with space characters.
+			f.chars[i][j] = ' '
 			f.isBackground[i][j] = true
 		}
 	}
@@ -303,15 +313,14 @@ func (s *Screen) renderFrame(currentFrame Frame) {
 						builder.WriteString("\x1b[0m")
 						colorSet = false
 					}
-					builder.WriteRune(' ') // CRITICAL FIX: Add a space to clear the character
 				} else {
 					if !colorSet || currentFrame.colors[row][col] != currentColor {
 						builder.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", currentFrame.colors[row][col].R, currentFrame.colors[row][col].G, currentFrame.colors[row][col].B))
 						currentColor = currentFrame.colors[row][col]
 						colorSet = true
 					}
-					builder.WriteRune(currentFrame.chars[row][col])
 				}
+				builder.WriteRune(currentFrame.chars[row][col])
 			}
 		}
 	}
@@ -474,11 +483,11 @@ func main() {
 		default:
 			now := time.Now()
 			elapsed := now.Sub(lastFrameTime)
-
+			
 			// Generate the new frame and then render it.
 			currentFrame := engine.generateFrame()
 			screen.renderFrame(currentFrame)
-
+			
 			timeToSleep := frameDuration - elapsed
 			if timeToSleep > 0 {
 				time.Sleep(timeToSleep)
