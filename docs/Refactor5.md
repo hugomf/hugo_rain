@@ -1,0 +1,4 @@
+Dependency Injection for ConfigParser: Added a configData field to ConfigParser and a NewConfigParser constructor to inject ConfigData, removing the dependency on the global defaultConfigData.
+App Factory: Introduced an App struct and a NewApp factory function to encapsulate component creation and wiring, reducing coupling in the main function.
+Main Function Simplification: Moved the application setup and runtime logic to App.Run, making main solely responsible for initializing and starting the application.
+FPS Field Addition: Added an FPS field to the Engine struct to allow App.Run to access the frame rate without duplicating configuration.
