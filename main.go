@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"flag"
 	"fmt"
 	"io"
@@ -284,7 +285,10 @@ func (s *Screen) deepCopy(target *Screen) {
 
 // checkAndResize checks for terminal size changes and resizes the screen buffer.
 func (s *Screen) checkAndResize() bool {
-	newHeight, newWidth := getTerminalSize()
+	newHeight, newWidth, err := getTerminalSize()
+	if err != nil {
+		return false
+	}
 	if newHeight == s.height && newWidth == s.width {
 		return false
 	}
@@ -455,15 +459,19 @@ func dimColor(c Color, factor float64) Color {
 }
 
 // Terminal management
-func getTerminalSize() (height, width int) {
+// Updated to return an error.
+func getTerminalSize() (height, width int, err error) {
 	var sz struct{ rows, cols, x, y uint16 }
-	syscall.Syscall(
+	_, _, e := syscall.Syscall(
 		syscall.SYS_IOCTL,
 		uintptr(syscall.Stdout),
 		uintptr(syscall.TIOCGWINSZ),
 		uintptr(unsafe.Pointer(&sz)),
 	)
-	return int(sz.rows), int(sz.cols)
+	if e != 0 {
+		return 0, 0, e
+	}
+	return int(sz.rows), int(sz.cols), nil
 }
 
 func setupTerminal() {
@@ -488,21 +496,15 @@ func min[T int | float64](a, b T) T {
 
 func main() {
 	// 1. Configuration & Input Validation
-	cfg := parseFlags()
+	cfg, err := parseFlags()
+	if err != nil {
+		fmt.Printf("Error: %v\n", err)
+		os.Exit(1)
+	}
 
 	baseColor, exists := colorThemes[strings.ToLower(cfg.ColorName)]
 	if !exists {
 		fmt.Printf("Error: Unknown color '%s'\n", cfg.ColorName)
-		os.Exit(1)
-	}
-
-	if cfg.Speed < 10 || cfg.Speed > 500 {
-		fmt.Printf("Error: Speed must be between 10-500 milliseconds (got %d)\n", cfg.Speed)
-		os.Exit(1)
-	}
-
-	if cfg.Density < 0.1 || cfg.Density > 3.0 {
-		fmt.Printf("Error: Density must be between 0.1-3.0 (got %.1f)\n", cfg.Density)
 		os.Exit(1)
 	}
 
@@ -525,7 +527,13 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	height, width := getTerminalSize()
+	// Updated to handle a potential error from getTerminalSize
+	height, width, err := getTerminalSize()
+	if err != nil {
+		fmt.Printf("Error: Could not get terminal size: %v\n", err)
+		os.Exit(1)
+	}
+
 	setupTerminal()
 	defer restoreTerminal()
 
@@ -571,7 +579,8 @@ type Config struct {
 }
 
 // Parses and validates command-line flags.
-func parseFlags() *Config {
+// Updated to return an error instead of using os.Exit.
+func parseFlags() (*Config, error) {
 	cfg := &Config{}
 
 	flag.StringVar(&cfg.ColorName, "color", "green", "Color theme (green, amber, red, orange, blue, purple, cyan, pink, white)")
@@ -596,8 +605,17 @@ func parseFlags() *Config {
 		fmt.Println("\nDensity: 0.1-3.0 (higher = more drops)")
 		fmt.Println("  Examples: 0.5 (light), 0.7 (normal), 1.0 (full), 1.5 (heavy), 2.0 (intense), 3.0 (maximum)")
 		fmt.Println("\nCharacter Set: Provide a named set (e.g., --chars kanji) or a custom string (e.g., --chars \"012345\")")
+		// Using os.Exit here is still acceptable as this is a terminal-specific informational exit.
 		os.Exit(0)
 	}
 
-	return cfg
+	if cfg.Speed < 10 || cfg.Speed > 500 {
+		return nil, errors.New(fmt.Sprintf("speed must be between 10-500 milliseconds (got %d)", cfg.Speed))
+	}
+
+	if cfg.Density < 0.1 || cfg.Density > 3.0 {
+		return nil, errors.New(fmt.Sprintf("density must be between 0.1-3.0 (got %.1f)", cfg.Density))
+	}
+
+	return cfg, nil
 }
