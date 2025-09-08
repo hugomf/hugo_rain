@@ -11,7 +11,6 @@ import (
 	"math/rand"
 	"os"
 	"os/signal"
-	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -22,11 +21,10 @@ import (
 // ---------- CONFIG ----------------------------------------------------------
 
 type Config struct {
-	BaseColor   Color
-	FPS         int
-	Density     float64
-	ListOptions bool
-	CharSet     []rune
+	BaseColor Color
+	FPS       int
+	Density   float64
+	CharSet   []rune
 }
 
 func ParseFlags() (*Config, error) {
@@ -50,13 +48,13 @@ func ParseFlags() (*Config, error) {
 
 	baseColor, ok := colorThemes[strings.ToLower(colorName)]
 	if !ok {
-		return nil, errors.New("unknown color " + colorName)
+		return nil, fmt.Errorf("unknown color '%s'", colorName)
 	}
 	if fps < 1 || fps > 60 {
-		return nil, errors.New("fps out of range 1-60")
+		return nil, fmt.Errorf("fps out of range 1-60 (got %d)", fps)
 	}
 	if density < 0.1 || density > 3.0 {
-		return nil, errors.New("density out of range 0.1-3.0")
+		return nil, fmt.Errorf("density out of range 0.1-3.0 (got %.1f)", density)
 	}
 
 	charSet, err := resolveCharSet(charSetFlag)
@@ -194,19 +192,52 @@ type Engine struct {
 	sizeFn        TermSizeFunc
 }
 
-func NewEngine(ctx context.Context, cfg *Config, r *rand.Rand, factory DropFactory, sizeFn TermSizeFunc) *Engine {
+func NewEngine(cfg *Config, r *rand.Rand, factory DropFactory, sizeFn TermSizeFunc) *Engine {
 	e := &Engine{
-		height: 0, width: 0,
-		baseColor: cfg.BaseColor, density: cfg.Density,
-		randGen: r, factory: factory, sizeFn: sizeFn,
+		height:    0,
+		width:     0,
+		baseColor: cfg.BaseColor,
+		density:   cfg.Density,
+		randGen:   r,
+		factory:   factory,
+		sizeFn:    sizeFn,
 	}
 	e.trailColors = e.calcTrailColors(6)
 	return e
 }
 
 func (e *Engine) Resize(h, w int) {
+	if h == e.height && w == e.width {
+		return
+	}
 	e.height, e.width = h, w
-	e.drops = e.buildDrops(w)
+
+	newDrops := make([][]Drop, w)
+	for i := 0; i < w; i++ {
+		n := int(e.density)
+		if e.randGen.Float64() < e.density-float64(n) {
+			n++
+		}
+		if n < 1 {
+			n = 1
+		}
+
+		if i < len(e.drops) {
+			newDrops[i] = e.drops[i]
+			if len(newDrops[i]) > n {
+				newDrops[i] = newDrops[i][:n]
+			} else if len(newDrops[i]) < n {
+				for j := len(newDrops[i]); j < n; j++ {
+					newDrops[i] = append(newDrops[i], e.factory.CreateDrop(e.height))
+				}
+			}
+		} else {
+			for j := 0; j < n; j++ {
+				newDrops[i] = append(newDrops[i], e.factory.CreateDrop(e.height))
+			}
+		}
+	}
+	e.drops = newDrops
 }
 
 func (e *Engine) calcTrailColors(steps int) []Color {
@@ -219,36 +250,14 @@ func (e *Engine) calcTrailColors(steps int) []Color {
 	return c
 }
 
-func (e *Engine) buildDrops(cols int) [][]Drop {
-	drops := make([][]Drop, cols)
-	for i := range drops {
-		n := int(e.density)
-		if e.randGen.Float64() < e.density-float64(n) {
-			n++
-		}
-		if n < 1 {
-			n = 1
-		}
-		for j := 0; j < n; j++ {
-			drops[i] = append(drops[i], e.factory.CreateDrop(e.height))
-		}
-	}
-	return drops
-}
-
-func (e *Engine) NextFrame() Frame {
-	// dynamic resize
-	if h, w, err := e.sizeFn(); err == nil && (h != e.height || w != e.width) {
-		e.Resize(h, w)
-	}
-	f := NewFrame(e.height, e.width)
+func (e *Engine) NextFrame(frame *Frame) {
+	frame.clear()
 	for col, dd := range e.drops {
 		for i := range dd {
 			e.updateDrop(&dd[i])
-			e.drawDrop(&dd[i], &f, col)
+			e.drawDrop(&dd[i], frame, col)
 		}
 	}
-	return f
 }
 
 func (e *Engine) updateDrop(d *Drop) {
@@ -261,7 +270,7 @@ func (e *Engine) updateDrop(d *Drop) {
 			d.active = true
 			d.pos = 0
 			d.length = e.randGen.Intn(12) + 8
-			d.char = e.factory.(*randomFactory).charSet[e.randGen.Intn(len(e.factory.(*randomFactory).charSet))]
+			d.char = e.factory.CreateDrop(e.height).char
 		}
 		return
 	}
@@ -269,7 +278,7 @@ func (e *Engine) updateDrop(d *Drop) {
 	if d.pos-d.length > e.height {
 		d.pos = -d.length
 		d.length = e.randGen.Intn(12) + 8
-		d.char = e.factory.(*randomFactory).charSet[e.randGen.Intn(len(e.factory.(*randomFactory).charSet))]
+		d.char = e.factory.CreateDrop(e.height).char
 		pause := 0.15 - e.density*0.05
 		if e.density > 1.0 {
 			pause = 0.05 - (e.density-1.0)*0.02
@@ -312,9 +321,10 @@ type Frame struct {
 	width  int
 }
 
-func NewFrame(h, w int) Frame {
-	f := Frame{
-		height: h, width: w,
+func NewFrame(h, w int) *Frame {
+	f := &Frame{
+		height: h,
+		width:  w,
 		chars:  make([][]rune, h),
 		colors: make([][]Color, h),
 		isBg:   make([][]bool, h),
@@ -323,43 +333,48 @@ func NewFrame(h, w int) Frame {
 		f.chars[i] = make([]rune, w)
 		f.colors[i] = make([]Color, w)
 		f.isBg[i] = make([]bool, w)
-		for j := 0; j < w; j++ {
+	}
+	return f
+}
+
+func (f *Frame) clear() {
+	for i := 0; i < f.height; i++ {
+		for j := 0; j < f.width; j++ {
 			f.chars[i][j] = ' '
 			f.isBg[i][j] = true
 		}
 	}
-	return f
 }
 
 // ---------- RENDERER --------------------------------------------------------
 
 type Screen struct {
 	out           io.Writer
-	height, width int
-	prev          Frame
-	mu            sync.RWMutex
+	mu            sync.Mutex
+	previousFrame *Frame
 }
 
-func NewScreen(out io.Writer, h, w int) *Screen {
-	return &Screen{
-		out: out, height: h, width: w,
-		prev: NewFrame(h, w),
-	}
+func NewScreen(out io.Writer) *Screen {
+	return &Screen{out: out}
 }
 
-func (s *Screen) Draw(f Frame) {
+func (s *Screen) Draw(f *Frame) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.prev.height != f.height || s.prev.width != f.width {
+
+	if s.previousFrame == nil || s.previousFrame.height != f.height || s.previousFrame.width != f.width {
 		s.fullRender(f)
-		s.prev = f
-		return
+	} else {
+		s.deltaRender(f)
 	}
-	s.deltaRender(f)
-	s.prev = f
+	// Make a copy of the current frame to use as the previous frame next time
+	if s.previousFrame == nil || s.previousFrame.height != f.height || s.previousFrame.width != f.width {
+		s.previousFrame = NewFrame(f.height, f.width)
+	}
+	s.copyFrame(f, s.previousFrame)
 }
 
-func (s *Screen) fullRender(f Frame) {
+func (s *Screen) fullRender(f *Frame) {
 	var b strings.Builder
 	b.WriteString("\x1b[H")
 	var cur Color
@@ -374,7 +389,7 @@ func (s *Screen) fullRender(f Frame) {
 			} else {
 				if !set || f.colors[row][col] != cur {
 					c := f.colors[row][col]
-					b.WriteString("\x1b[38;2;" + strconv.Itoa(int(c.R)) + ";" + strconv.Itoa(int(c.G)) + ";" + strconv.Itoa(int(c.B)) + "m")
+					b.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B))
 					cur = c
 					set = true
 				}
@@ -389,16 +404,16 @@ func (s *Screen) fullRender(f Frame) {
 	s.out.Write([]byte(b.String()))
 }
 
-func (s *Screen) deltaRender(f Frame) {
+func (s *Screen) deltaRender(f *Frame) {
 	var b strings.Builder
 	var cur Color
 	set := false
 	dirty := false
 	for row := 0; row < f.height; row++ {
 		for col := 0; col < f.width; col++ {
-			if f.chars[row][col] != s.prev.chars[row][col] || f.colors[row][col] != s.prev.colors[row][col] {
+			if f.chars[row][col] != s.previousFrame.chars[row][col] || f.colors[row][col] != s.previousFrame.colors[row][col] {
 				dirty = true
-				b.WriteString("\x1b[" + strconv.Itoa(row+1) + ";" + strconv.Itoa(col+1) + "H")
+				b.WriteString(fmt.Sprintf("\x1b[%d;%dH", row+1, col+1))
 				if f.isBg[row][col] {
 					if set {
 						b.WriteString("\x1b[0m")
@@ -407,7 +422,7 @@ func (s *Screen) deltaRender(f Frame) {
 				} else {
 					if !set || f.colors[row][col] != cur {
 						c := f.colors[row][col]
-						b.WriteString("\x1b[38;2;" + strconv.Itoa(int(c.R)) + ";" + strconv.Itoa(int(c.G)) + ";" + strconv.Itoa(int(c.B)) + "m")
+						b.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B))
 						cur = c
 						set = true
 					}
@@ -419,6 +434,15 @@ func (s *Screen) deltaRender(f Frame) {
 	if dirty {
 		b.WriteString("\x1b[0m")
 		s.out.Write([]byte(b.String()))
+	}
+}
+
+// copyFrame manually copies a source frame to a destination frame.
+func (s *Screen) copyFrame(src, dst *Frame) {
+	for r := 0; r < src.height; r++ {
+		copy(dst.chars[r], src.chars[r])
+		copy(dst.colors[r], src.colors[r])
+		copy(dst.isBg[r], src.isBg[r])
 	}
 }
 
@@ -452,13 +476,13 @@ func main() {
 	defer RestoreTerminal()
 
 	factory := NewRandomFactory(rng, h, cfg.CharSet)
-	engine := NewEngine(ctx, cfg, rng, factory, GetTermSize)
-	engine.Resize(h, w)
-	screen := NewScreen(os.Stdout, h, w)
+	engine := NewEngine(cfg, rng, factory, GetTermSize)
+	screen := NewScreen(os.Stdout)
 
-	first := engine.NextFrame()
-	screen.fullRender(first)
-	screen.prev = first
+	frameBuffer := NewFrame(h, w)
+	engine.Resize(h, w)
+	engine.NextFrame(frameBuffer)
+	screen.Draw(frameBuffer)
 
 	frameDuration := time.Second / time.Duration(cfg.FPS)
 	tick := time.NewTicker(frameDuration)
@@ -469,7 +493,14 @@ func main() {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			screen.Draw(engine.NextFrame())
+			newH, newW, err := GetTermSize()
+			if err == nil && (newH != engine.height || newW != engine.width) {
+				engine.Resize(newH, newW)
+				frameBuffer = NewFrame(newH, newW)
+			}
+
+			engine.NextFrame(frameBuffer)
+			screen.Draw(frameBuffer)
 		}
 	}
 }
