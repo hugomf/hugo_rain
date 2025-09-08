@@ -16,23 +16,23 @@ import (
 	"unsafe"
 )
 
-// ---------- CONFIG ----------
+// === CONFIG ===
 
-// Config holds the configuration for the Matrix rain effect.
+// Config holds the configuration for the Matrix rain animation.
 type Config struct {
-	BaseColor        Color   // Base color for the drops
+	BaseColor        Color   // Base color for falling characters
 	FPS              int     // Frames per second for animation
-	Density          float64 // Density of drops per column
-	CharSet          []rune  // Characters to use for drops
-	MinDropLength    int     // Minimum length of drop trail
-	MaxDropLength    int     // Maximum length of drop trail
-	ReactivateChance float64 // Chance to reactivate an inactive drop
-	PauseChance      float64 // Chance to pause an active drop
+	Density          float64 // Number of character drops per column
+	CharSet          []rune  // Characters used in the animation
+	MinDropLength    int     // Minimum length of a drop's trail
+	MaxDropLength    int     // Maximum length of a drop's trail
+	ReactivateChance float64 // Probability of reactivating an inactive drop
+	PauseChance      float64 // Probability of pausing an active drop
 }
 
-// ---------- CONFIG DATA ----------
+// === CONFIG DATA ===
 
-// ConfigData holds predefined color themes and character sets.
+// ConfigData stores predefined color themes and character sets.
 type ConfigData struct {
 	ColorThemes map[string]Color
 	CharSets    map[string][]rune
@@ -61,30 +61,32 @@ var defaultConfigData = ConfigData{
 	},
 }
 
-// ---------- CONFIG PARSER ----------
+// === CONFIG PARSER ===
 
-// ConfigParser handles parsing command-line flags into a Config.
+// ConfigParser parses command-line flags into a Config.
 type ConfigParser struct {
-	configData ConfigData // Inject ConfigData instead of using global
+	configData ConfigData // Predefined themes and character sets
 }
 
+// NewConfigParser creates a new ConfigParser with the given ConfigData.
 func NewConfigParser(configData ConfigData) *ConfigParser {
 	return &ConfigParser{configData: configData}
 }
 
+// Parse processes command-line flags and returns a Config.
 func (p *ConfigParser) Parse() (*Config, error) {
 	var (
 		colorName   string
 		fps         int
 		density     float64
 		listOptions bool
-		charSetFlag string
+		charSetName string
 	)
-	flag.StringVar(&colorName, "color", "green", "theme (green, amber, red, ...)")
+	flag.StringVar(&colorName, "color", "green", "color theme (green, amber, red, etc.)")
 	flag.IntVar(&fps, "fps", 10, "frames per second (1-60)")
-	flag.Float64Var(&density, "density", 0.7, "drop density 0.1-3.0")
+	flag.Float64Var(&density, "density", 0.7, "drop density (0.1-3.0)")
 	flag.BoolVar(&listOptions, "list", false, "list available options")
-	flag.StringVar(&charSetFlag, "chars", "matrix", "named set or custom string")
+	flag.StringVar(&charSetName, "chars", "matrix", "character set name or custom string")
 	flag.Parse()
 
 	if listOptions {
@@ -93,16 +95,16 @@ func (p *ConfigParser) Parse() (*Config, error) {
 
 	baseColor, ok := p.configData.ColorThemes[strings.ToLower(colorName)]
 	if !ok {
-		return nil, fmt.Errorf("unknown color '%s'", colorName)
+		return nil, fmt.Errorf("unknown color theme: %s", colorName)
 	}
 	if fps < 1 || fps > 60 {
-		return nil, fmt.Errorf("fps out of range 1-60 (got %d)", fps)
+		return nil, fmt.Errorf("fps out of range (1-60): got %d", fps)
 	}
 	if density < 0.1 || density > 3.0 {
-		return nil, fmt.Errorf("density out of range 0.1-3.0 (got %.1f)", density)
+		return nil, fmt.Errorf("density out of range (0.1-3.0): got %.1f", density)
 	}
 
-	charSet, err := p.resolveCharSet(charSetFlag)
+	charSet, err := p.resolveCharSet(charSetName)
 	if err != nil {
 		return nil, err
 	}
@@ -119,72 +121,79 @@ func (p *ConfigParser) Parse() (*Config, error) {
 	}, nil
 }
 
+// listAndExit prints available options and exits.
 func (p *ConfigParser) listAndExit() {
 	fmt.Println("Available options:")
 	fmt.Println("Colors:")
-	for n := range p.configData.ColorThemes {
-		fmt.Println(" ", n)
+	for name := range p.configData.ColorThemes {
+		fmt.Println("  ", name)
 	}
 	fmt.Println("\nCharacter Sets:")
-	for n := range p.configData.CharSets {
-		fmt.Println(" ", n)
+	for name := range p.configData.CharSets {
+		fmt.Println("  ", name)
 	}
 	fmt.Println("\nFPS: 1-60")
 	fmt.Println("Density: 0.1-3.0")
 	os.Exit(0)
 }
 
-func (p *ConfigParser) resolveCharSet(flag string) ([]rune, error) {
-	if set, ok := p.configData.CharSets[strings.ToLower(flag)]; ok {
+// resolveCharSet converts a character set name or string to a rune slice.
+func (p *ConfigParser) resolveCharSet(name string) ([]rune, error) {
+	if set, ok := p.configData.CharSets[strings.ToLower(name)]; ok {
 		return set, nil
 	}
-	if flag == "" {
+	if name == "" {
 		return nil, errors.New("character set cannot be empty")
 	}
-	return []rune(flag), nil
+	return []rune(name), nil
 }
 
-// ---------- COLOR -----------
+// === COLOR ===
 
-// Color represents an RGB color value.
+// Color represents an RGB color value for terminal output.
 type Color struct{ R, G, B uint8 }
 
-func brighten(c Color, f float64) Color {
+// brighten increases the brightness of a color by a factor.
+func brighten(c Color, factor float64) Color {
 	return Color{
-		R: uint8(min(255, float64(c.R)*f)),
-		G: uint8(min(255, float64(c.G)*f)),
-		B: uint8(min(255, float64(c.B)*f)),
+		R: uint8(clamp(255, float64(c.R)*factor)),
+		G: uint8(clamp(255, float64(c.G)*factor)),
+		B: uint8(clamp(255, float64(c.B)*factor)),
 	}
 }
 
-func dim(c Color, f float64) Color {
+// dim reduces the brightness of a color by a factor.
+func dim(c Color, factor float64) Color {
 	return Color{
-		R: uint8(float64(c.R) * f),
-		G: uint8(float64(c.G) * f),
-		B: uint8(float64(c.B) * f),
+		R: uint8(float64(c.R) * factor),
+		G: uint8(float64(c.G) * factor),
+		B: uint8(float64(c.B) * factor),
 	}
 }
 
-// ---------- TERMINAL INTERFACE ----------
+// === TERMINAL INTERFACE ===
 
 // Terminal defines operations for interacting with the terminal.
 type Terminal interface {
-	Setup()
-	Restore()
-	GetSize() (h, w int, err error)
+	Setup()                         // Initialize terminal settings
+	Restore()                       // Restore terminal to original state
+	GetSize() (h, w int, err error) // Get terminal dimensions
 }
 
 // StdTerminal implements Terminal for standard terminal operations.
 type StdTerminal struct{}
 
+// Setup configures the terminal for animation (alternate buffer, hide cursor).
 func (t *StdTerminal) Setup() {
 	fmt.Print("\x1b[?1049h\x1b[?25l")
 }
 
+// Restore resets the terminal to its original state.
 func (t *StdTerminal) Restore() {
 	fmt.Print("\x1b[?25h\x1b[?1049l")
 }
 
+// GetSize returns the terminal's height and width in characters.
 func (t *StdTerminal) GetSize() (h, w int, err error) {
 	var sz struct{ rows, cols, x, y uint16 }
 	_, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(syscall.Stdout), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&sz)))
@@ -194,35 +203,35 @@ func (t *StdTerminal) GetSize() (h, w int, err error) {
 	return int(sz.rows), int(sz.cols), nil
 }
 
-// ---------- DROP LOGIC ----------
+// === DROP LOGIC ===
 
 // Drop represents a single falling character in the Matrix rain.
 type Drop struct {
 	Pos    int  // Current vertical position
-	Length int  // Length of the drop trail
+	Length int  // Length of the drop's trail
 	Char   rune // Character to display
 	Active bool // Whether the drop is currently falling
 }
 
 // DropUpdater defines the interface for updating drop state.
 type DropUpdater interface {
-	Update(d *Drop, height int)
+	Update(d *Drop, height int) // Update a drop's position and state
 }
 
-// ---------- ENGINE ----------
+// === ENGINE ===
 
-// Engine manages the Matrix rain effect, orchestrating drops and frames.
+// Engine manages the Matrix rain effect, coordinating drops and frames.
 type Engine struct {
 	height, width    int
 	baseColor        Color
 	trailColors      []Color
 	drops            [][]*Drop
-	randGen          *rand.Rand
+	random           *rand.Rand
 	charSet          []rune
 	density          float64
-	term             Terminal
+	terminal         Terminal
 	frameBuffer      *Frame
-	FPS              int
+	fps              int
 	minDropLength    int
 	maxDropLength    int
 	reactivateChance float64
@@ -230,94 +239,95 @@ type Engine struct {
 }
 
 // NewEngine creates a new Engine with the given configuration.
-func NewEngine(cfg *Config, r *rand.Rand, term Terminal) *Engine {
+func NewEngine(cfg *Config, r *rand.Rand, terminal Terminal) *Engine {
 	e := &Engine{
 		height:           0,
 		width:            0,
 		baseColor:        cfg.BaseColor,
 		density:          cfg.Density,
-		randGen:          r,
+		random:           r,
 		charSet:          cfg.CharSet,
-		term:             term,
+		terminal:         terminal,
 		frameBuffer:      nil,
-		FPS:              cfg.FPS,
+		fps:              cfg.FPS,
 		minDropLength:    cfg.MinDropLength,
 		maxDropLength:    cfg.MaxDropLength,
 		reactivateChance: cfg.ReactivateChance,
 		pauseChance:      cfg.PauseChance,
 	}
-	e.trailColors = e.calcTrailColors(5) // Reduced steps for simplicity
+	e.trailColors = e.calcTrailColors(5)
 	return e
 }
 
 // NewDrop creates a new Drop with random initial state.
-func (e *Engine) NewDrop() *Drop {
+func NewDrop(e *Engine) *Drop {
 	if len(e.charSet) == 0 {
-		panic("charset cannot be empty")
+		panic("character set cannot be empty")
 	}
 	return &Drop{
-		Pos:    e.randGen.Intn(e.height) - e.randGen.Intn(e.height/2),
-		Length: e.randGen.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength,
-		Char:   e.charSet[e.randGen.Intn(len(e.charSet))],
+		Pos:    e.random.Intn(e.height) - e.random.Intn(e.height/2),
+		Length: e.random.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength,
+		Char:   e.charSet[e.random.Intn(len(e.charSet))],
 		Active: true,
 	}
 }
 
-// Update implements DropUpdater to update a Drop's state.
+// Update advances a drop's state based on terminal height.
 func (e *Engine) Update(d *Drop, height int) {
 	if !d.Active {
-		if e.randGen.Float64() < e.reactivateChance*e.density {
+		if e.random.Float64() < e.reactivateChance*e.density {
 			d.Active = true
 			d.Pos = 0
-			d.Length = e.randGen.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength
-			d.Char = e.charSet[e.randGen.Intn(len(e.charSet))]
+			d.Length = e.random.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength
+			d.Char = e.charSet[e.random.Intn(len(e.charSet))]
 		}
 		return
 	}
 	d.Pos++
 	if d.Pos-d.Length > height {
 		d.Pos = -d.Length
-		d.Length = e.randGen.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength
-		d.Char = e.charSet[e.randGen.Intn(len(e.charSet))]
-		if e.randGen.Float64() < e.pauseChance {
+		d.Length = e.random.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength
+		d.Char = e.charSet[e.random.Intn(len(e.charSet))]
+		if e.random.Float64() < e.pauseChance {
 			d.Active = false
 		}
 	}
 }
 
 // Resize adjusts the engine's dimensions and drop grid.
-func (e *Engine) Resize(h, w int) {
-	if h == e.height && w == e.width {
+func (e *Engine) Resize(height, width int) {
+	if height == e.height && width == e.width {
 		return
 	}
-	e.height, e.width = h, w
+	e.height, e.width = height, width
 
-	e.drops = make([][]*Drop, w)
-	for col := 0; col < w; col++ {
-		numDrops := int(e.density + 0.5) // Simplified deterministic rounding
+	e.drops = make([][]*Drop, width)
+	for col := 0; col < width; col++ {
+		numDrops := int(e.density + 0.5)
 		if numDrops < 1 {
 			numDrops = 1
 		}
 		e.drops[col] = make([]*Drop, numDrops)
 		for i := 0; i < numDrops; i++ {
-			e.drops[col][i] = e.NewDrop()
+			e.drops[col][i] = NewDrop(e)
 		}
 	}
-	e.frameBuffer = NewFrame(h, w)
+	e.frameBuffer = NewFrame(height, width)
 }
 
+// calcTrailColors generates a gradient of trail colors.
 func (e *Engine) calcTrailColors(steps int) []Color {
-	c := make([]Color, steps)
+	colors := make([]Color, steps)
 	for i := 0; i < steps; i++ {
-		fade := 1.0 - float64(i)/float64(steps)*0.8 // Simplified fade calculation
-		c[i] = dim(e.baseColor, fade)
+		fade := 1.0 - float64(i)/float64(steps)*0.8
+		colors[i] = dim(e.baseColor, fade)
 	}
-	return c
+	return colors
 }
 
-// NextFrame generates the next frame of the animation.
+// NextFrame generates the next animation frame.
 func (e *Engine) NextFrame() *Frame {
-	if h, w, err := e.term.GetSize(); err == nil && (h != e.height || w != e.width) {
+	if h, w, err := e.terminal.GetSize(); err == nil && (h != e.height || w != e.width) {
 		e.Resize(h, w)
 	}
 
@@ -334,89 +344,99 @@ func (e *Engine) NextFrame() *Frame {
 	return e.frameBuffer
 }
 
+// getTrailColorIndex calculates the color index for a drop's trail position.
+func (e *Engine) getTrailColorIndex(pos, tail, length int) int {
+	dist := pos - tail
+	idx := int(float64(dist) / float64(length) * float64(len(e.trailColors)))
+	if idx >= len(e.trailColors) {
+		return len(e.trailColors) - 1
+	}
+	return idx
+}
+
 // drawDrop renders a drop onto the frame with trail colors.
-func (e *Engine) drawDrop(drop *Drop, f *Frame, col int) {
+func (e *Engine) drawDrop(drop *Drop, frame *Frame, col int) {
 	if !drop.Active {
 		return
 	}
 	tail := drop.Pos - drop.Length
 	for row := tail; row <= drop.Pos; row++ {
-		if row >= 0 && row < f.height {
-			f.chars[row][col] = drop.Char
-			f.isBg[row][col] = false
-			dist := drop.Pos - row
-			idx := int(float64(dist) / float64(drop.Length) * float64(len(e.trailColors)))
-			if idx >= len(e.trailColors) {
-				idx = len(e.trailColors) - 1
-			}
-			f.colors[row][col] = e.trailColors[idx]
+		if row >= 0 && row < frame.height {
+			frame.characters[row][col] = drop.Char
+			frame.isBackground[row][col] = false
+			frame.colors[row][col] = e.trailColors[e.getTrailColorIndex(drop.Pos, row, drop.Length)]
 		}
 	}
 }
 
-// ---------- FRAME -----------
+// === FRAME ===
 
 // Frame represents the in-memory terminal screen state.
 type Frame struct {
-	chars  [][]rune
-	colors [][]Color
-	isBg   [][]bool
-	height int
-	width  int
+	characters   [][]rune  // Characters to display
+	colors       [][]Color // Colors for each position
+	isBackground [][]bool  // Whether a position is background
+	height       int
+	width        int
 }
 
-func NewFrame(h, w int) *Frame {
+// NewFrame creates a new Frame with the given dimensions.
+func NewFrame(height, width int) *Frame {
 	f := &Frame{
-		height: h,
-		width:  w,
-		chars:  make([][]rune, h),
-		colors: make([][]Color, h),
-		isBg:   make([][]bool, h),
+		height:       height,
+		width:        width,
+		characters:   make([][]rune, height),
+		colors:       make([][]Color, height),
+		isBackground: make([][]bool, height),
 	}
-	for i := 0; i < h; i++ {
-		f.chars[i] = make([]rune, w)
-		f.colors[i] = make([]Color, w)
-		f.isBg[i] = make([]bool, w)
+	for i := 0; i < height; i++ {
+		f.characters[i] = make([]rune, width)
+		f.colors[i] = make([]Color, width)
+		f.isBackground[i] = make([]bool, width)
 	}
 	return f
 }
 
+// clear resets the frame to its default state.
 func (f *Frame) clear() {
 	for i := 0; i < f.height; i++ {
 		for j := 0; j < f.width; j++ {
-			f.chars[i][j] = ' '
-			f.isBg[i][j] = true
+			f.characters[i][j] = ' '
+			f.isBackground[i][j] = true
 		}
 	}
 }
 
-// ---------- RENDERER --------
+// === RENDERER ===
 
 // Screen handles rendering frames to the terminal.
 type Screen struct {
 	out           io.Writer
-	mu            sync.Mutex
+	mutex         sync.Mutex
 	previousFrame *Frame
 }
 
+// NewScreen creates a new Screen with the given output writer.
 func NewScreen(out io.Writer) *Screen {
 	return &Screen{out: out}
 }
 
-func (s *Screen) Draw(f *Frame) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
+// Draw renders a frame to the terminal, using delta rendering when possible.
+func (s *Screen) Draw(frame *Frame) {
+	s.mutex.Lock()
+	defer s.mutex.Unlock()
 
-	if s.previousFrame == nil || s.previousFrame.height != f.height || s.previousFrame.width != f.width {
-		s.fullRender(f)
-		s.previousFrame = NewFrame(f.height, f.width)
-		s.copyFrame(f, s.previousFrame)
+	if s.previousFrame == nil || s.previousFrame.height != frame.height || s.previousFrame.width != frame.width {
+		s.fullRender(frame)
+		s.previousFrame = NewFrame(frame.height, frame.width)
+		s.copyFrame(frame, s.previousFrame)
 	} else {
-		s.deltaRender(f)
-		s.copyFrame(f, s.previousFrame)
+		s.deltaRender(frame)
+		s.copyFrame(frame, s.previousFrame)
 	}
 }
 
+// writeColor writes ANSI color codes to the builder if needed.
 func (s *Screen) writeColor(b *strings.Builder, c Color, set *bool, cur *Color) {
 	if !*set || c != *cur {
 		b.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B))
@@ -425,151 +445,157 @@ func (s *Screen) writeColor(b *strings.Builder, c Color, set *bool, cur *Color) 
 	}
 }
 
-func (s *Screen) fullRender(f *Frame) {
+// fullRender draws the entire frame to the terminal.
+func (s *Screen) fullRender(frame *Frame) {
 	var b strings.Builder
-	b.Grow(f.height*f.width*12 + 10)
-	b.WriteString("\x1b[H")
-	var cur Color
-	set := false
-	for row := 0; row < f.height; row++ {
-		for col := 0; col < f.width; col++ {
-			if f.isBg[row][col] {
-				if set {
-					b.WriteString("\x1b[0m")
-					set = false
+	b.Grow(frame.height*frame.width*12 + 10)
+	b.WriteString("\x1b[H") // Move cursor to top-left
+	var currentColor Color
+	isColorSet := false
+
+	for row := 0; row < frame.height; row++ {
+		for col := 0; col < frame.width; col++ {
+			if frame.isBackground[row][col] {
+				if isColorSet {
+					b.WriteString("\x1b[0m") // Reset color
+					isColorSet = false
 				}
 			} else {
-				s.writeColor(&b, f.colors[row][col], &set, &cur)
+				s.writeColor(&b, frame.colors[row][col], &isColorSet, &currentColor)
 			}
-			b.WriteRune(f.chars[row][col])
+			b.WriteRune(frame.characters[row][col])
 		}
-		if row < f.height-1 {
+		if row < frame.height-1 {
 			b.WriteString("\r\n")
 		}
 	}
-	if set {
-		b.WriteString("\x1b[0m")
+	if isColorSet {
+		b.WriteString("\x1b[0m") // Reset color at end
 	}
 	s.out.Write([]byte(b.String()))
 }
 
-func (s *Screen) deltaRender(f *Frame) {
+// deltaRender draws only changed parts of the frame.
+func (s *Screen) deltaRender(frame *Frame) {
 	var b strings.Builder
-	b.Grow(f.height * f.width * 12)
-	var cur Color
-	set := false
-	dirty := false
-	for row := 0; row < f.height; row++ {
-		for col := 0; col < f.width; col++ {
-			if f.chars[row][col] != s.previousFrame.chars[row][col] || f.colors[row][col] != s.previousFrame.colors[row][col] {
-				dirty = true
+	b.Grow(frame.height * frame.width * 12)
+	var currentColor Color
+	isColorSet := false
+	hasChanges := false
+
+	for row := 0; row < frame.height; row++ {
+		for col := 0; col < frame.width; col++ {
+			if frame.characters[row][col] != s.previousFrame.characters[row][col] || frame.colors[row][col] != s.previousFrame.colors[row][col] {
+				hasChanges = true
 				b.WriteString(fmt.Sprintf("\x1b[%d;%dH", row+1, col+1))
-				if f.isBg[row][col] {
-					if set {
+				if frame.isBackground[row][col] {
+					if isColorSet {
 						b.WriteString("\x1b[0m")
-						set = false
+						isColorSet = false
 					}
 				} else {
-					s.writeColor(&b, f.colors[row][col], &set, &cur)
+					s.writeColor(&b, frame.colors[row][col], &isColorSet, &currentColor)
 				}
-				b.WriteRune(f.chars[row][col])
+				b.WriteRune(frame.characters[row][col])
 			}
 		}
 	}
-	if dirty {
-		if set {
+	if hasChanges {
+		if isColorSet {
 			b.WriteString("\x1b[0m")
 		}
 		s.out.Write([]byte(b.String()))
 	}
 }
 
+// copyFrame copies the source frame to the destination frame.
 func (s *Screen) copyFrame(src, dst *Frame) {
 	for r := 0; r < src.height; r++ {
-		copy(dst.chars[r], src.chars[r])
+		copy(dst.characters[r], src.characters[r])
 		copy(dst.colors[r], src.colors[r])
-		copy(dst.isBg[r], src.isBg[r])
+		copy(dst.isBackground[r], src.isBackground[r])
 	}
 }
 
-// ---------- UTILS -----------
+// === UTILS ===
 
-func min[T int | float64](a, b T) T {
-	if a < b {
-		return a
+// clamp limits a value to a maximum, used for color calculations.
+func clamp[T int | float64](max, val T) T {
+	if val < max {
+		return val
 	}
-	return b
+	return max
 }
 
-// ---------- APP FACTORY -----------
+// === MATRIX RAIN ===
 
-// App holds the components of the Matrix rain application.
-type App struct {
-	Engine *Engine
-	Screen *Screen
-	Term   Terminal
-	Ctx    context.Context
-	Stop   context.CancelFunc
+// MatrixRain holds the components of the Matrix rain animation.
+type MatrixRain struct {
+	engine   *Engine
+	screen   *Screen
+	terminal Terminal
+	ctx      context.Context
+	stop     context.CancelFunc
 }
 
-// NewApp creates and configures the Matrix rain application.
-func NewApp(configData ConfigData, out io.Writer, rng *rand.Rand) (*App, error) {
+// NewMatrixRain creates and configures the Matrix rain animation.
+func NewMatrixRain(configData ConfigData, out io.Writer, random *rand.Rand) (*MatrixRain, error) {
 	parser := NewConfigParser(configData)
 	cfg, err := parser.Parse()
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse config: %w", err)
 	}
 
-	term := &StdTerminal{}
-	h, w, err := term.GetSize()
-	if err != nil || h <= 0 || w <= 0 {
+	terminal := &StdTerminal{}
+	height, width, err := terminal.GetSize()
+	if err != nil || height <= 0 || width <= 0 {
 		return nil, fmt.Errorf("cannot get terminal size: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	engine := NewEngine(cfg, rng, term)
-	engine.Resize(h, w)
+	engine := NewEngine(cfg, random, terminal)
+	engine.Resize(height, width)
 	screen := NewScreen(out)
 
-	return &App{
-		Engine: engine,
-		Screen: screen,
-		Term:   term,
-		Ctx:    ctx,
-		Stop:   stop,
+	return &MatrixRain{
+		engine:   engine,
+		screen:   screen,
+		terminal: terminal,
+		ctx:      ctx,
+		stop:     stop,
 	}, nil
 }
 
 // Run starts the Matrix rain animation.
-func (a *App) Run() {
-	defer a.Stop()
-	defer a.Term.Restore()
+func (r *MatrixRain) Run() {
+	defer r.stop()
+	defer r.terminal.Restore()
 
-	a.Term.Setup()
+	r.terminal.Setup()
 
-	frameDuration := time.Second / time.Duration(a.Engine.FPS)
+	frameDuration := time.Second / time.Duration(r.engine.fps)
 	tick := time.NewTicker(frameDuration)
 	defer tick.Stop()
 
 	for {
 		select {
-		case <-a.Ctx.Done():
+		case <-r.ctx.Done():
 			return
 		case <-tick.C:
-			a.Screen.Draw(a.Engine.NextFrame())
+			r.screen.Draw(r.engine.NextFrame())
 		}
 	}
 }
 
-// ---------- MAIN -----------
+// === MAIN ===
 
 func main() {
-	rng := rand.New(rand.NewSource(time.Now().UnixNano()))
-	app, err := NewApp(defaultConfigData, os.Stdout, rng)
+	random := rand.New(rand.NewSource(time.Now().UnixNano()))
+	rain, err := NewMatrixRain(defaultConfigData, os.Stdout, random)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "Error:", err)
+		fmt.Fprintln(os.Stderr, "error: ", err)
 		os.Exit(1)
 	}
-	app.Run()
+	rain.Run()
 }
