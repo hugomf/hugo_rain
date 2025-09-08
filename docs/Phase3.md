@@ -41,7 +41,6 @@ graph TD
 This phase focused on centralizing configuration validation to make the code cleaner and more robust.
 
 ### Before
-
 Validation for different flags was scattered across the main function after the flags were parsed.
 
 ```mermaid
