@@ -39,6 +39,35 @@ type Drop struct {
 	active bool
 }
 
+// DropFactory defines the interface for creating Drop objects.
+type DropFactory interface {
+	CreateDrop(screenHeight int) Drop
+}
+
+// RandomDropFactory is a concrete implementation of DropFactory.
+type RandomDropFactory struct {
+	randGen      *rand.Rand
+	screenHeight int
+}
+
+// NewRandomDropFactory creates a new RandomDropFactory.
+func NewRandomDropFactory(randGen *rand.Rand, screenHeight int) *RandomDropFactory {
+	return &RandomDropFactory{
+		randGen:      randGen,
+		screenHeight: screenHeight,
+	}
+}
+
+// CreateDrop initializes a new drop with random properties.
+func (f *RandomDropFactory) CreateDrop(screenHeight int) Drop {
+	return Drop{
+		pos:    f.randGen.Intn(screenHeight) - f.randGen.Intn(screenHeight/2),
+		length: f.randGen.Intn(12) + 8,
+		char:   getRandomMatrixChar(f.randGen),
+		active: true,
+	}
+}
+
 // MatrixEngine manages the entire animation logic.
 type MatrixEngine struct {
 	screen       *Screen
@@ -47,15 +76,19 @@ type MatrixEngine struct {
 	trailColors  []Color
 	density      float64
 	animationCtx context.Context
+	randGen      *rand.Rand
+	dropFactory  DropFactory
 }
 
 // NewMatrixEngine creates a new instance of the MatrixEngine.
-func NewMatrixEngine(ctx context.Context, height, width int, baseColor Color, density float64) *MatrixEngine {
+func NewMatrixEngine(ctx context.Context, height, width int, baseColor Color, density float64, randGen *rand.Rand, dropFactory DropFactory) *MatrixEngine {
 	engine := &MatrixEngine{
 		screen:       NewScreen(height, width),
 		baseColor:    baseColor,
 		density:      density,
 		animationCtx: ctx,
+		randGen:      randGen,
+		dropFactory:  dropFactory,
 	}
 	engine.trailColors = engine.calculateTrailColors(6)
 	engine.drops = engine.createDrops(width)
@@ -71,12 +104,7 @@ func (me *MatrixEngine) createDrops(count int) []Drop {
 
 	drops := make([]Drop, totalDrops)
 	for i := range drops {
-		drops[i] = Drop{
-			pos:    rand.Intn(me.screen.height) - rand.Intn(me.screen.height/2),
-			length: rand.Intn(12) + 8,
-			char:   getRandomMatrixChar(),
-			active: true,
-		}
+		drops[i] = me.dropFactory.CreateDrop(me.screen.height)
 	}
 	return drops
 }
@@ -98,7 +126,7 @@ func (me *MatrixEngine) updateAndRender(previousScreen *Screen) {
 	for col := 0; col < me.screen.width; col++ {
 		// Determine how many drops should be drawn in this specific column.
 		dropsPerColumn := int(me.density)
-		if rand.Float64() < (me.density - float64(dropsPerColumn)) {
+		if me.randGen.Float64() < (me.density - float64(dropsPerColumn)) {
 			dropsPerColumn++
 		}
 		if dropsPerColumn < 1 {
@@ -108,7 +136,7 @@ func (me *MatrixEngine) updateAndRender(previousScreen *Screen) {
 		// Update and draw each drop.
 		for i := 0; i < dropsPerColumn; i++ {
 			if dropIndex < len(me.drops) {
-				me.drops[dropIndex].update(me.screen.height, me.density)
+				me.drops[dropIndex].update(me.screen.height, me.density, me.randGen)
 				me.drops[dropIndex].draw(me.screen, col, me.trailColors)
 				dropIndex++
 			}
@@ -130,12 +158,7 @@ func (me *MatrixEngine) resizeDrops(newWidth, screenHeight int) []Drop {
 	}
 	if newTotalDrops > len(me.drops) {
 		for i := len(me.drops); i < newTotalDrops; i++ {
-			me.drops = append(me.drops, Drop{
-				pos:    rand.Intn(screenHeight) - rand.Intn(screenHeight/2),
-				length: rand.Intn(12) + 8,
-				char:   getRandomMatrixChar(),
-				active: true,
-			})
+			me.drops = append(me.drops, me.dropFactory.CreateDrop(screenHeight))
 		}
 	} else if newTotalDrops < len(me.drops) {
 		me.drops = me.drops[:newTotalDrops]
@@ -156,17 +179,17 @@ func (me *MatrixEngine) calculateTrailColors(steps int) []Color {
 }
 
 // Drop represents a single falling character stream.
-func (d *Drop) update(screenHeight int, density float64) {
+func (d *Drop) update(screenHeight int, density float64, randGen *rand.Rand) {
 	if !d.active {
 		activationChance := 0.005 * density
 		if density > 1.0 {
 			activationChance = 0.005 + (density-1.0)*0.02
 		}
-		if rand.Float64() < activationChance {
+		if randGen.Float64() < activationChance {
 			d.active = true
 			d.pos = 0
-			d.length = rand.Intn(12) + 8
-			d.char = getRandomMatrixChar()
+			d.length = randGen.Intn(12) + 8
+			d.char = getRandomMatrixChar(randGen)
 		}
 		return
 	}
@@ -174,8 +197,8 @@ func (d *Drop) update(screenHeight int, density float64) {
 	d.pos++
 	if d.pos-d.length > screenHeight {
 		d.pos = -d.length
-		d.length = rand.Intn(12) + 8
-		d.char = getRandomMatrixChar()
+		d.length = randGen.Intn(12) + 8
+		d.char = getRandomMatrixChar(randGen)
 
 		pauseChance := 0.15 - (density * 0.05)
 		if density > 1.0 {
@@ -184,7 +207,7 @@ func (d *Drop) update(screenHeight int, density float64) {
 		if pauseChance < 0.01 {
 			pauseChance = 0.01
 		}
-		if rand.Float64() < pauseChance {
+		if randGen.Float64() < pauseChance {
 			d.active = false
 		}
 	}
@@ -452,8 +475,8 @@ func restoreTerminal() {
 }
 
 // Utility functions
-func getRandomMatrixChar() rune {
-	return matrixRunes[rand.Intn(len(matrixRunes))]
+func getRandomMatrixChar(randGen *rand.Rand) rune {
+	return matrixRunes[randGen.Intn(len(matrixRunes))]
 }
 
 func min[T int | float64](a, b T) T {
@@ -464,66 +487,40 @@ func min[T int | float64](a, b T) T {
 }
 
 func main() {
-	colorName := flag.String("color", "green", "Color theme (green, amber, red, orange, blue, purple, cyan, pink, white)")
-	speed := flag.Int("speed", 120, "Animation speed in milliseconds (10-500, lower = faster)")
-	density := flag.Float64("density", 0.7, "Drop density (0.1-3.0, higher = more drops)")
-	listOptions := flag.Bool("list", false, "List available options")
-	// Changed default to "matrix" for clarity, and updated help text.
-	charSetString := flag.String("chars", "matrix", "Character set name (matrix, binary, symbols, emojis, kanji, greek) or a custom string.")
-	flag.Parse()
+	// 1. Configuration & Input Validation
+	cfg := parseFlags()
 
-	if *listOptions {
-		fmt.Println("Available options:")
-		fmt.Println("\nColors:")
-		for name := range colorThemes {
-			fmt.Printf("  %s\n", name)
-		}
-		fmt.Println("\nCharacter Sets:")
-		for name := range matrixCharSets { // This will now show kanji and greek correctly
-			fmt.Printf("  %s\n", name)
-		}
-		fmt.Println("\nSpeed: 10-500 milliseconds (lower = faster)")
-		fmt.Println("  Examples: 10 (insane), 20 (hyper), 30 (ultra), 50 (very fast), 80 (fast), 120 (normal)")
-		fmt.Println("\nDensity: 0.1-3.0 (higher = more drops)")
-		fmt.Println("  Examples: 0.5 (light), 0.7 (normal), 1.0 (full), 1.5 (heavy), 2.0 (intense), 3.0 (maximum)")
-		fmt.Println("\nCharacter Set: Provide a named set (e.g., --chars kanji) or a custom string (e.g., --chars \"012345\")")
-		return
-	}
-
-	baseColor, exists := colorThemes[strings.ToLower(*colorName)]
+	baseColor, exists := colorThemes[strings.ToLower(cfg.ColorName)]
 	if !exists {
-		fmt.Printf("Error: Unknown color '%s'\n", *colorName)
+		fmt.Printf("Error: Unknown color '%s'\n", cfg.ColorName)
 		os.Exit(1)
 	}
 
-	if *speed < 10 || *speed > 500 {
-		fmt.Printf("Error: Speed must be between 10-500 milliseconds (got %d)\n", *speed)
+	if cfg.Speed < 10 || cfg.Speed > 500 {
+		fmt.Printf("Error: Speed must be between 10-500 milliseconds (got %d)\n", cfg.Speed)
 		os.Exit(1)
 	}
 
-	if *density < 0.1 || *density > 3.0 {
-		fmt.Printf("Error: Density must be between 0.1-3.0 (got %.1f)\n", *density)
+	if cfg.Density < 0.1 || cfg.Density > 3.0 {
+		fmt.Printf("Error: Density must be between 0.1-3.0 (got %.1f)\n", cfg.Density)
 		os.Exit(1)
 	}
 
-	// --- KEY CHANGE HERE ---
-	// Prioritize looking up named character sets first.
-	// If the input string is NOT a key in matrixCharSets, then treat it as a custom string.
-	inputCharSet := strings.ToLower(*charSetString)
+	// Set character set
+	inputCharSet := strings.ToLower(cfg.CharSetString)
 	if selectedChars, exists := matrixCharSets[inputCharSet]; exists {
 		matrixRunes = selectedChars
 	} else {
-		// Treat as a custom string if it's not a predefined name.
-		matrixRunes = []rune(*charSetString)
+		matrixRunes = []rune(cfg.CharSetString)
 	}
-	// --- END KEY CHANGE ---
 
 	if len(matrixRunes) == 0 {
 		fmt.Printf("Error: Character set string cannot be empty\n")
 		os.Exit(1)
 	}
 
-	rand.Seed(time.Now().UnixNano())
+	// 2. Setup (Wiring Dependencies)
+	randGen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
@@ -532,17 +529,21 @@ func main() {
 	setupTerminal()
 	defer restoreTerminal()
 
-	const targetFPS = 10 // Keep this low for your speed setting
+	const targetFPS = 10
 	frameDuration := time.Second / targetFPS
 
-	engine := NewMatrixEngine(ctx, height, width, baseColor, *density)
+	// Create the DropFactory and inject it into the MatrixEngine
+	dropFactory := NewRandomDropFactory(randGen, height)
+	engine := NewMatrixEngine(ctx, height, width, baseColor, cfg.Density, randGen, dropFactory)
 	previousScreen := NewScreen(height, width)
 
+	// Initial render
 	engine.screen.renderFull()
 	engine.screen.deepCopy(previousScreen)
 
 	lastFrameTime := time.Now()
 
+	// 3. Main Loop
 	for {
 		select {
 		case <-ctx.Done():
@@ -558,4 +559,45 @@ func main() {
 			lastFrameTime = now
 		}
 	}
+}
+
+// Configuration struct to hold parsed flags
+type Config struct {
+	ColorName     string
+	Speed         int
+	Density       float64
+	ListOptions   bool
+	CharSetString string
+}
+
+// Parses and validates command-line flags.
+func parseFlags() *Config {
+	cfg := &Config{}
+
+	flag.StringVar(&cfg.ColorName, "color", "green", "Color theme (green, amber, red, orange, blue, purple, cyan, pink, white)")
+	flag.IntVar(&cfg.Speed, "speed", 120, "Animation speed in milliseconds (10-500, lower = faster)")
+	flag.Float64Var(&cfg.Density, "density", 0.7, "Drop density (0.1-3.0, higher = more drops)")
+	flag.BoolVar(&cfg.ListOptions, "list", false, "List available options")
+	flag.StringVar(&cfg.CharSetString, "chars", "matrix", "Character set name (matrix, binary, symbols, emojis, kanji, greek) or a custom string.")
+	flag.Parse()
+
+	if cfg.ListOptions {
+		fmt.Println("Available options:")
+		fmt.Println("\nColors:")
+		for name := range colorThemes {
+			fmt.Printf("  %s\n", name)
+		}
+		fmt.Println("\nCharacter Sets:")
+		for name := range matrixCharSets {
+			fmt.Printf("  %s\n", name)
+		}
+		fmt.Println("\nSpeed: 10-500 milliseconds (lower = faster)")
+		fmt.Println("  Examples: 10 (insane), 20 (hyper), 30 (ultra), 50 (very fast), 80 (fast), 120 (normal)")
+		fmt.Println("\nDensity: 0.1-3.0 (higher = more drops)")
+		fmt.Println("  Examples: 0.5 (light), 0.7 (normal), 1.0 (full), 1.5 (heavy), 2.0 (intense), 3.0 (maximum)")
+		fmt.Println("\nCharacter Set: Provide a named set (e.g., --chars kanji) or a custom string (e.g., --chars \"012345\")")
+		os.Exit(0)
+	}
+
+	return cfg
 }
