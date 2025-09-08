@@ -20,10 +20,14 @@ import (
 
 // Config holds the configuration for the Matrix rain effect.
 type Config struct {
-	BaseColor Color   // Base color for the drops
-	FPS       int     // Frames per second for animation
-	Density   float64 // Density of drops per column
-	CharSet   []rune  // Characters to use for drops
+	BaseColor        Color   // Base color for the drops
+	FPS              int     // Frames per second for animation
+	Density          float64 // Density of drops per column
+	CharSet          []rune  // Characters to use for drops
+	MinDropLength    int     // Minimum length of drop trail
+	MaxDropLength    int     // Maximum length of drop trail
+	ReactivateChance float64 // Chance to reactivate an inactive drop
+	PauseChance      float64 // Chance to pause an active drop
 }
 
 // ---------- CONFIG DATA ----------
@@ -104,10 +108,14 @@ func (p *ConfigParser) Parse() (*Config, error) {
 	}
 
 	return &Config{
-		BaseColor: baseColor,
-		FPS:       fps,
-		Density:   density,
-		CharSet:   charSet,
+		BaseColor:        baseColor,
+		FPS:              fps,
+		Density:          density,
+		CharSet:          charSet,
+		MinDropLength:    8,
+		MaxDropLength:    20,
+		ReactivateChance: 0.01,
+		PauseChance:      0.1,
 	}, nil
 }
 
@@ -205,32 +213,40 @@ type DropUpdater interface {
 
 // Engine manages the Matrix rain effect, orchestrating drops and frames.
 type Engine struct {
-	height, width int
-	baseColor     Color
-	trailColors   []Color
-	drops         [][]*Drop
-	randGen       *rand.Rand
-	charSet       []rune
-	density       float64
-	term          Terminal
-	frameBuffer   *Frame
-	FPS           int // Added for access in App
+	height, width    int
+	baseColor        Color
+	trailColors      []Color
+	drops            [][]*Drop
+	randGen          *rand.Rand
+	charSet          []rune
+	density          float64
+	term             Terminal
+	frameBuffer      *Frame
+	FPS              int
+	minDropLength    int
+	maxDropLength    int
+	reactivateChance float64
+	pauseChance      float64
 }
 
 // NewEngine creates a new Engine with the given configuration.
 func NewEngine(cfg *Config, r *rand.Rand, term Terminal) *Engine {
 	e := &Engine{
-		height:      0,
-		width:       0,
-		baseColor:   cfg.BaseColor,
-		density:     cfg.Density,
-		randGen:     r,
-		charSet:     cfg.CharSet,
-		term:        term,
-		frameBuffer: nil,
-		FPS:         cfg.FPS, // Initialize FPS
+		height:           0,
+		width:            0,
+		baseColor:        cfg.BaseColor,
+		density:          cfg.Density,
+		randGen:          r,
+		charSet:          cfg.CharSet,
+		term:             term,
+		frameBuffer:      nil,
+		FPS:              cfg.FPS,
+		minDropLength:    cfg.MinDropLength,
+		maxDropLength:    cfg.MaxDropLength,
+		reactivateChance: cfg.ReactivateChance,
+		pauseChance:      cfg.PauseChance,
 	}
-	e.trailColors = e.calcTrailColors(6)
+	e.trailColors = e.calcTrailColors(5) // Reduced steps for simplicity
 	return e
 }
 
@@ -241,7 +257,7 @@ func (e *Engine) NewDrop() *Drop {
 	}
 	return &Drop{
 		Pos:    e.randGen.Intn(e.height) - e.randGen.Intn(e.height/2),
-		Length: e.randGen.Intn(12) + 8,
+		Length: e.randGen.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength,
 		Char:   e.charSet[e.randGen.Intn(len(e.charSet))],
 		Active: true,
 	}
@@ -250,14 +266,10 @@ func (e *Engine) NewDrop() *Drop {
 // Update implements DropUpdater to update a Drop's state.
 func (e *Engine) Update(d *Drop, height int) {
 	if !d.Active {
-		chance := 0.005 * e.density
-		if e.density > 1.0 {
-			chance = 0.005 + (e.density-1.0)*0.02
-		}
-		if e.randGen.Float64() < chance {
+		if e.randGen.Float64() < e.reactivateChance*e.density {
 			d.Active = true
 			d.Pos = 0
-			d.Length = e.randGen.Intn(12) + 8
+			d.Length = e.randGen.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength
 			d.Char = e.charSet[e.randGen.Intn(len(e.charSet))]
 		}
 		return
@@ -265,16 +277,9 @@ func (e *Engine) Update(d *Drop, height int) {
 	d.Pos++
 	if d.Pos-d.Length > height {
 		d.Pos = -d.Length
-		d.Length = e.randGen.Intn(12) + 8
+		d.Length = e.randGen.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength
 		d.Char = e.charSet[e.randGen.Intn(len(e.charSet))]
-		pause := 0.15 - e.density*0.05
-		if e.density > 1.0 {
-			pause = 0.05 - (e.density-1.0)*0.02
-		}
-		if pause < 0.01 {
-			pause = 0.01
-		}
-		if e.randGen.Float64() < pause {
+		if e.randGen.Float64() < e.pauseChance {
 			d.Active = false
 		}
 	}
@@ -289,14 +294,10 @@ func (e *Engine) Resize(h, w int) {
 
 	e.drops = make([][]*Drop, w)
 	for col := 0; col < w; col++ {
-		numDrops := int(e.density)
-		if e.randGen.Float64() < e.density-float64(numDrops) {
-			numDrops++
-		}
+		numDrops := int(e.density + 0.5) // Simplified deterministic rounding
 		if numDrops < 1 {
 			numDrops = 1
 		}
-
 		e.drops[col] = make([]*Drop, numDrops)
 		for i := 0; i < numDrops; i++ {
 			e.drops[col][i] = e.NewDrop()
@@ -307,9 +308,8 @@ func (e *Engine) Resize(h, w int) {
 
 func (e *Engine) calcTrailColors(steps int) []Color {
 	c := make([]Color, steps)
-	c[0] = brighten(e.baseColor, 1.2)
-	for i := 1; i < steps; i++ {
-		fade := 1.0 - (float64(i)/float64(steps-1))*0.7
+	for i := 0; i < steps; i++ {
+		fade := 1.0 - float64(i)/float64(steps)*0.8 // Simplified fade calculation
 		c[i] = dim(e.baseColor, fade)
 	}
 	return c
@@ -417,6 +417,14 @@ func (s *Screen) Draw(f *Frame) {
 	}
 }
 
+func (s *Screen) writeColor(b *strings.Builder, c Color, set *bool, cur *Color) {
+	if !*set || c != *cur {
+		b.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B))
+		*cur = c
+		*set = true
+	}
+}
+
 func (s *Screen) fullRender(f *Frame) {
 	var b strings.Builder
 	b.Grow(f.height*f.width*12 + 10)
@@ -431,12 +439,7 @@ func (s *Screen) fullRender(f *Frame) {
 					set = false
 				}
 			} else {
-				if !set || f.colors[row][col] != cur {
-					c := f.colors[row][col]
-					b.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B))
-					cur = c
-					set = true
-				}
+				s.writeColor(&b, f.colors[row][col], &set, &cur)
 			}
 			b.WriteRune(f.chars[row][col])
 		}
@@ -467,12 +470,7 @@ func (s *Screen) deltaRender(f *Frame) {
 						set = false
 					}
 				} else {
-					if !set || f.colors[row][col] != cur {
-						c := f.colors[row][col]
-						b.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B))
-						cur = c
-						set = true
-					}
+					s.writeColor(&b, f.colors[row][col], &set, &cur)
 				}
 				b.WriteRune(f.chars[row][col])
 			}
