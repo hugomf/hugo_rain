@@ -10,7 +10,6 @@ import (
 	"os"
 	"os/signal"
 	"strings"
-	"sync"
 	"syscall"
 	"time"
 	"unsafe"
@@ -74,7 +73,7 @@ func NewConfigParser(configData ConfigData) *ConfigParser {
 }
 
 // Parse processes command-line flags and returns a Config.
-func (p *ConfigParser) Parse() (*Config, error) {
+func (p *ConfigParser) Parse() (cfg *Config, err error) {
 	var (
 		colorName   string
 		fps         int
@@ -90,7 +89,7 @@ func (p *ConfigParser) Parse() (*Config, error) {
 	flag.Parse()
 
 	if listOptions {
-		p.listAndExit()
+		return nil, p.listOptions()
 	}
 
 	baseColor, ok := p.configData.ColorThemes[strings.ToLower(colorName)]
@@ -121,8 +120,8 @@ func (p *ConfigParser) Parse() (*Config, error) {
 	}, nil
 }
 
-// listAndExit prints available options and exits.
-func (p *ConfigParser) listAndExit() {
+// listOptions prints available options and returns an error to signal exit.
+func (p *ConfigParser) listOptions() error {
 	fmt.Println("Available options:")
 	fmt.Println("Colors:")
 	for name := range p.configData.ColorThemes {
@@ -134,7 +133,7 @@ func (p *ConfigParser) listAndExit() {
 	}
 	fmt.Println("\nFPS: 1-60")
 	fmt.Println("Density: 0.1-3.0")
-	os.Exit(0)
+	return errors.New("list options requested")
 }
 
 // resolveCharSet converts a character set name or string to a rune slice.
@@ -196,9 +195,12 @@ func (t *StdTerminal) Restore() {
 // GetSize returns the terminal's height and width in characters.
 func (t *StdTerminal) GetSize() (h, w int, err error) {
 	var sz struct{ rows, cols, x, y uint16 }
-	_, _, e := syscall.Syscall(syscall.SYS_IOCTL, uintptr(syscall.Stdout), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&sz)))
-	if e != 0 {
-		return 0, 0, e
+	_, _, errno := syscall.Syscall(syscall.SYS_IOCTL, uintptr(syscall.Stdout), uintptr(syscall.TIOCGWINSZ), uintptr(unsafe.Pointer(&sz)))
+	if errno != 0 {
+		return 0, 0, fmt.Errorf("failed to get terminal size: %w", syscall.Errno(errno))
+	}
+	if sz.rows <= 0 || sz.cols <= 0 {
+		return 0, 0, errors.New("invalid terminal dimensions")
 	}
 	return int(sz.rows), int(sz.cols), nil
 }
@@ -213,9 +215,17 @@ type Drop struct {
 	Active bool // Whether the drop is currently falling
 }
 
-// DropUpdater defines the interface for updating drop state.
-type DropUpdater interface {
-	Update(d *Drop, height int) // Update a drop's position and state
+// NewDrop creates a new Drop with random initial state.
+func NewDrop(height, minLength, maxLength int, charSet []rune, random *rand.Rand) (*Drop, error) {
+	if len(charSet) == 0 {
+		return nil, errors.New("character set cannot be empty")
+	}
+	return &Drop{
+		Pos:    random.Intn(height) - random.Intn(height/2),
+		Length: random.Intn(maxLength-minLength+1) + minLength,
+		Char:   charSet[random.Intn(len(charSet))],
+		Active: true,
+	}, nil
 }
 
 // === ENGINE ===
@@ -239,13 +249,22 @@ type Engine struct {
 }
 
 // NewEngine creates a new Engine with the given configuration.
-func NewEngine(cfg *Config, r *rand.Rand, terminal Terminal) *Engine {
+func NewEngine(cfg *Config, random *rand.Rand, terminal Terminal) (*Engine, error) {
+	if len(cfg.CharSet) == 0 {
+		return nil, errors.New("character set cannot be empty")
+	}
+	if cfg.MinDropLength <= 0 || cfg.MaxDropLength < cfg.MinDropLength {
+		return nil, errors.New("invalid drop length configuration")
+	}
+	if cfg.ReactivateChance < 0 || cfg.PauseChance < 0 {
+		return nil, errors.New("invalid probability configuration")
+	}
 	e := &Engine{
 		height:           0,
 		width:            0,
 		baseColor:        cfg.BaseColor,
 		density:          cfg.Density,
-		random:           r,
+		random:           random,
 		charSet:          cfg.CharSet,
 		terminal:         terminal,
 		frameBuffer:      nil,
@@ -256,20 +275,7 @@ func NewEngine(cfg *Config, r *rand.Rand, terminal Terminal) *Engine {
 		pauseChance:      cfg.PauseChance,
 	}
 	e.trailColors = e.calcTrailColors(5)
-	return e
-}
-
-// NewDrop creates a new Drop with random initial state.
-func NewDrop(e *Engine) *Drop {
-	if len(e.charSet) == 0 {
-		panic("character set cannot be empty")
-	}
-	return &Drop{
-		Pos:    e.random.Intn(e.height) - e.random.Intn(e.height/2),
-		Length: e.random.Intn(e.maxDropLength-e.minDropLength+1) + e.minDropLength,
-		Char:   e.charSet[e.random.Intn(len(e.charSet))],
-		Active: true,
-	}
+	return e, nil
 }
 
 // Update advances a drop's state based on terminal height.
@@ -295,9 +301,9 @@ func (e *Engine) Update(d *Drop, height int) {
 }
 
 // Resize adjusts the engine's dimensions and drop grid.
-func (e *Engine) Resize(height, width int) {
+func (e *Engine) Resize(height, width int) error {
 	if height == e.height && width == e.width {
-		return
+		return nil
 	}
 	e.height, e.width = height, width
 
@@ -309,10 +315,15 @@ func (e *Engine) Resize(height, width int) {
 		}
 		e.drops[col] = make([]*Drop, numDrops)
 		for i := 0; i < numDrops; i++ {
-			e.drops[col][i] = NewDrop(e)
+			drop, err := NewDrop(e.height, e.minDropLength, e.maxDropLength, e.charSet, e.random)
+			if err != nil {
+				return err
+			}
+			e.drops[col][i] = drop
 		}
 	}
-	e.frameBuffer = NewFrame(height, width)
+	e.frameBuffer = NewFrame(e.height, e.width)
+	return nil
 }
 
 // calcTrailColors generates a gradient of trail colors.
@@ -326,22 +337,26 @@ func (e *Engine) calcTrailColors(steps int) []Color {
 }
 
 // NextFrame generates the next animation frame.
-func (e *Engine) NextFrame() *Frame {
+func (e *Engine) NextFrame() (*Frame, error) {
 	if h, w, err := e.terminal.GetSize(); err == nil && (h != e.height || w != e.width) {
-		e.Resize(h, w)
+		if err := e.Resize(h, w); err != nil {
+			return nil, err
+		}
 	}
 
 	e.frameBuffer.clear()
 	for col, drops := range e.drops {
 		for _, drop := range drops {
-			if drop == nil {
+			if drop == nil || !drop.Active {
 				continue
 			}
 			e.Update(drop, e.height)
-			e.drawDrop(drop, e.frameBuffer, col)
+			if drop.Active {
+				e.drawDrop(drop, e.frameBuffer, col)
+			}
 		}
 	}
-	return e.frameBuffer
+	return e.frameBuffer, nil
 }
 
 // getTrailColorIndex calculates the color index for a drop's trail position.
@@ -356,16 +371,13 @@ func (e *Engine) getTrailColorIndex(pos, tail, length int) int {
 
 // drawDrop renders a drop onto the frame with trail colors.
 func (e *Engine) drawDrop(drop *Drop, frame *Frame, col int) {
-	if !drop.Active {
-		return
-	}
 	tail := drop.Pos - drop.Length
-	for row := tail; row <= drop.Pos; row++ {
-		if row >= 0 && row < frame.height {
-			frame.characters[row][col] = drop.Char
-			frame.isBackground[row][col] = false
-			frame.colors[row][col] = e.trailColors[e.getTrailColorIndex(drop.Pos, row, drop.Length)]
-		}
+	startRow := max(tail, 0)
+	endRow := min(drop.Pos, frame.height-1)
+	for row := startRow; row <= endRow; row++ {
+		frame.characters[row][col] = drop.Char
+		frame.isBackground[row][col] = false
+		frame.colors[row][col] = e.trailColors[e.getTrailColorIndex(drop.Pos, row, drop.Length)]
 	}
 }
 
@@ -382,27 +394,34 @@ type Frame struct {
 
 // NewFrame creates a new Frame with the given dimensions.
 func NewFrame(height, width int) *Frame {
-	f := &Frame{
+	characters := make([][]rune, height)
+	colors := make([][]Color, height)
+	isBackground := make([][]bool, height)
+	for i := range characters {
+		characters[i] = make([]rune, width)
+		colors[i] = make([]Color, width)
+		isBackground[i] = make([]bool, width)
+		for j := range characters[i] {
+			characters[i][j] = ' '
+			isBackground[i][j] = true
+		}
+	}
+	return &Frame{
 		height:       height,
 		width:        width,
-		characters:   make([][]rune, height),
-		colors:       make([][]Color, height),
-		isBackground: make([][]bool, height),
+		characters:   characters,
+		colors:       colors,
+		isBackground: isBackground,
 	}
-	for i := 0; i < height; i++ {
-		f.characters[i] = make([]rune, width)
-		f.colors[i] = make([]Color, width)
-		f.isBackground[i] = make([]bool, width)
-	}
-	return f
 }
 
 // clear resets the frame to its default state.
 func (f *Frame) clear() {
-	for i := 0; i < f.height; i++ {
-		for j := 0; j < f.width; j++ {
+	for i := range f.characters {
+		for j := range f.characters[i] {
 			f.characters[i][j] = ' '
 			f.isBackground[i][j] = true
+			f.colors[i][j] = Color{} // Reset color to zero value
 		}
 	}
 }
@@ -412,7 +431,6 @@ func (f *Frame) clear() {
 // Screen handles rendering frames to the terminal.
 type Screen struct {
 	out           io.Writer
-	mutex         sync.Mutex
 	previousFrame *Frame
 }
 
@@ -423,9 +441,6 @@ func NewScreen(out io.Writer) *Screen {
 
 // Draw renders a frame to the terminal, using delta rendering when possible.
 func (s *Screen) Draw(frame *Frame) {
-	s.mutex.Lock()
-	defer s.mutex.Unlock()
-
 	if s.previousFrame == nil || s.previousFrame.height != frame.height || s.previousFrame.width != frame.width {
 		s.fullRender(frame)
 		s.previousFrame = NewFrame(frame.height, frame.width)
@@ -437,18 +452,21 @@ func (s *Screen) Draw(frame *Frame) {
 }
 
 // writeColor writes ANSI color codes to the builder if needed.
-func (s *Screen) writeColor(b *strings.Builder, c Color, set *bool, cur *Color) {
-	if !*set || c != *cur {
+func (s *Screen) writeColor(b *strings.Builder, c Color, isColorSet *bool, currentColor *Color) bool {
+	if !*isColorSet || c != *currentColor {
 		b.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", c.R, c.G, c.B))
-		*cur = c
-		*set = true
+		*currentColor = c
+		*isColorSet = true
+		return true
 	}
+	return false
 }
 
 // fullRender draws the entire frame to the terminal.
 func (s *Screen) fullRender(frame *Frame) {
 	var b strings.Builder
-	b.Grow(frame.height*frame.width*12 + 10)
+	// Estimate: 1 rune + up to 20 bytes for color codes per cell, plus newlines
+	b.Grow(frame.height * (frame.width*21 + 2))
 	b.WriteString("\x1b[H") // Move cursor to top-left
 	var currentColor Color
 	isColorSet := false
@@ -460,7 +478,7 @@ func (s *Screen) fullRender(frame *Frame) {
 					b.WriteString("\x1b[0m") // Reset color
 					isColorSet = false
 				}
-			} else {
+			} else if col == 0 || frame.colors[row][col] != frame.colors[row][col-1] {
 				s.writeColor(&b, frame.colors[row][col], &isColorSet, &currentColor)
 			}
 			b.WriteRune(frame.characters[row][col])
@@ -478,13 +496,14 @@ func (s *Screen) fullRender(frame *Frame) {
 // deltaRender draws only changed parts of the frame.
 func (s *Screen) deltaRender(frame *Frame) {
 	var b strings.Builder
-	b.Grow(frame.height * frame.width * 12)
+	// Estimate: fewer cells change, so use a smaller initial size
+	b.Grow(frame.height * frame.width * 10)
 	var currentColor Color
 	isColorSet := false
 	hasChanges := false
 
-	for row := 0; row < frame.height; row++ {
-		for col := 0; col < frame.width; col++ {
+	for col := 0; col < frame.width; col++ {
+		for row := 0; row < frame.height; row++ {
 			if frame.characters[row][col] != s.previousFrame.characters[row][col] || frame.colors[row][col] != s.previousFrame.colors[row][col] {
 				hasChanges = true
 				b.WriteString(fmt.Sprintf("\x1b[%d;%dH", row+1, col+1))
@@ -510,7 +529,7 @@ func (s *Screen) deltaRender(frame *Frame) {
 
 // copyFrame copies the source frame to the destination frame.
 func (s *Screen) copyFrame(src, dst *Frame) {
-	for r := 0; r < src.height; r++ {
+	for r := range src.characters {
 		copy(dst.characters[r], src.characters[r])
 		copy(dst.colors[r], src.colors[r])
 		copy(dst.isBackground[r], src.isBackground[r])
@@ -519,12 +538,28 @@ func (s *Screen) copyFrame(src, dst *Frame) {
 
 // === UTILS ===
 
-// clamp limits a value to a maximum, used for color calculations.
-func clamp[T int | float64](max, val T) T {
+// clamp limits a float64 value to a maximum, used for color calculations.
+func clamp(max, val float64) float64 {
 	if val < max {
 		return val
 	}
 	return max
+}
+
+// max returns the larger of two integers.
+func max(a, b int) int {
+	if a > b {
+		return a
+	}
+	return b
+}
+
+// min returns the smaller of two integers.
+func min(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
 }
 
 // === MATRIX RAIN ===
@@ -548,14 +583,19 @@ func NewMatrixRain(configData ConfigData, out io.Writer, random *rand.Rand) (*Ma
 
 	terminal := &StdTerminal{}
 	height, width, err := terminal.GetSize()
-	if err != nil || height <= 0 || width <= 0 {
+	if err != nil {
 		return nil, fmt.Errorf("cannot get terminal size: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 
-	engine := NewEngine(cfg, random, terminal)
-	engine.Resize(height, width)
+	engine, err := NewEngine(cfg, random, terminal)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create engine: %w", err)
+	}
+	if err := engine.Resize(height, width); err != nil {
+		return nil, fmt.Errorf("failed to resize engine: %w", err)
+	}
 	screen := NewScreen(out)
 
 	return &MatrixRain{
@@ -568,7 +608,7 @@ func NewMatrixRain(configData ConfigData, out io.Writer, random *rand.Rand) (*Ma
 }
 
 // Run starts the Matrix rain animation.
-func (r *MatrixRain) Run() {
+func (r *MatrixRain) Run() error {
 	defer r.stop()
 	defer r.terminal.Restore()
 
@@ -581,9 +621,13 @@ func (r *MatrixRain) Run() {
 	for {
 		select {
 		case <-r.ctx.Done():
-			return
+			return nil
 		case <-tick.C:
-			r.screen.Draw(r.engine.NextFrame())
+			frame, err := r.engine.NextFrame()
+			if err != nil {
+				return fmt.Errorf("failed to generate frame: %w", err)
+			}
+			r.screen.Draw(frame)
 		}
 	}
 }
@@ -594,8 +638,11 @@ func main() {
 	random := rand.New(rand.NewSource(time.Now().UnixNano()))
 	rain, err := NewMatrixRain(defaultConfigData, os.Stdout, random)
 	if err != nil {
-		fmt.Fprintln(os.Stderr, "error: ", err)
+		fmt.Fprintln(os.Stderr, "error:", err)
 		os.Exit(1)
 	}
-	rain.Run()
+	if err := rain.Run(); err != nil {
+		fmt.Fprintln(os.Stderr, "error:", err)
+		os.Exit(1)
+	}
 }
