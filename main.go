@@ -71,20 +71,21 @@ func (f *RandomDropFactory) CreateDrop(screenHeight int) Drop {
 
 // MatrixEngine manages the entire animation logic.
 type MatrixEngine struct {
-	screen       *Screen
-	drops        []Drop
-	baseColor    Color
-	trailColors  []Color
-	density      float64
-	animationCtx context.Context
-	randGen      *rand.Rand
-	dropFactory  DropFactory
+	height, width int
+	drops         []Drop
+	baseColor     Color
+	trailColors   []Color
+	density       float64
+	animationCtx  context.Context
+	randGen       *rand.Rand
+	dropFactory   DropFactory
 }
 
 // NewMatrixEngine creates a new instance of the MatrixEngine.
 func NewMatrixEngine(ctx context.Context, height, width int, baseColor Color, density float64, randGen *rand.Rand, dropFactory DropFactory) *MatrixEngine {
 	engine := &MatrixEngine{
-		screen:       NewScreen(height, width),
+		height:       height,
+		width:        width,
 		baseColor:    baseColor,
 		density:      density,
 		animationCtx: ctx,
@@ -105,27 +106,24 @@ func (me *MatrixEngine) createDrops(count int) []Drop {
 
 	drops := make([]Drop, totalDrops)
 	for i := range drops {
-		drops[i] = me.dropFactory.CreateDrop(me.screen.height)
+		drops[i] = me.dropFactory.CreateDrop(me.height)
 	}
 	return drops
 }
 
-// updateAndRender updates the drops and renders the screen.
-func (me *MatrixEngine) updateAndRender(previousScreen *Screen) {
-	// Handle terminal resize.
-	if me.screen.checkAndResize() {
-		me.drops = me.resizeDrops(me.screen.width, me.screen.height)
-		me.screen.renderFull() // Force full redraw on resize
-		me.screen.deepCopy(previousScreen)
-		return
+// generateFrame computes the new frame of animation and returns a Frame object.
+func (me *MatrixEngine) generateFrame() Frame {
+	// First, check for terminal size changes and resize the engine's drops if needed.
+	newHeight, newWidth, err := getTerminalSize()
+	if err == nil && (newHeight != me.height || newWidth != me.width) {
+		me.height, me.width = newHeight, newWidth
+		me.drops = me.resizeDrops(me.width, me.height)
 	}
 
-	me.screen.clear()
+	frame := NewFrame(me.height, me.width)
 
-	// Update and draw all drops.
 	dropIndex := 0
-	for col := 0; col < me.screen.width; col++ {
-		// Determine how many drops should be drawn in this specific column.
+	for col := 0; col < me.width; col++ {
 		dropsPerColumn := int(me.density)
 		if me.randGen.Float64() < (me.density - float64(dropsPerColumn)) {
 			dropsPerColumn++
@@ -134,21 +132,15 @@ func (me *MatrixEngine) updateAndRender(previousScreen *Screen) {
 			dropsPerColumn = 1
 		}
 
-		// Update and draw each drop.
 		for i := 0; i < dropsPerColumn; i++ {
 			if dropIndex < len(me.drops) {
-				me.drops[dropIndex].update(me.screen.height, me.density, me.randGen)
-				me.drops[dropIndex].draw(me.screen, col, me.trailColors)
+				me.drops[dropIndex].update(me.height, me.density, me.randGen)
+				me.drops[dropIndex].draw(&frame, col, me.trailColors)
 				dropIndex++
 			}
 		}
 	}
-
-	// Render only the changes to the screen for performance.
-	me.screen.renderChanges(previousScreen)
-
-	// Update the previous screen buffer for the next frame.
-	me.screen.deepCopy(previousScreen)
+	return frame
 }
 
 // resizeDrops adjusts the number of drops on a terminal resize.
@@ -215,39 +207,38 @@ func (d *Drop) update(screenHeight int, density float64, randGen *rand.Rand) {
 }
 
 // draw places the drop's characters on the screen buffer.
-func (d *Drop) draw(s *Screen, col int, trailColors []Color) {
+func (d *Drop) draw(f *Frame, col int, trailColors []Color) {
 	if !d.active {
 		return
 	}
 
 	tailPos := d.pos - d.length
 	for row := tailPos; row <= d.pos; row++ {
-		if row >= 0 && row < s.height {
-			s.chars[row][col] = d.char
-			s.isBackground[row][col] = false
+		if row >= 0 && row < f.height {
+			f.chars[row][col] = d.char
+			f.isBackground[row][col] = false
 			distFromHead := d.pos - row
 			colorIndex := int(float64(distFromHead) / float64(d.length) * float64(len(trailColors)))
 			if colorIndex >= len(trailColors) {
 				colorIndex = len(trailColors) - 1
 			}
-			s.colors[row][col] = trailColors[colorIndex]
+			f.colors[row][col] = trailColors[colorIndex]
 		}
 	}
 }
 
-// Screen manages the terminal display buffer.
-type Screen struct {
+// Frame represents a single snapshot of the animation, decoupled from the display.
+type Frame struct {
 	chars        [][]rune
 	colors       [][]Color
 	isBackground [][]bool
 	height       int
 	width        int
-	mu           sync.RWMutex
 }
 
-// NewScreen creates a new Screen instance.
-func NewScreen(height, width int) *Screen {
-	s := &Screen{
+// NewFrame creates a new Frame instance.
+func NewFrame(height, width int) Frame {
+	f := Frame{
 		height:       height,
 		width:        width,
 		chars:        make([][]rune, height),
@@ -255,101 +246,42 @@ func NewScreen(height, width int) *Screen {
 		isBackground: make([][]bool, height),
 	}
 	for i := 0; i < height; i++ {
-		s.chars[i] = make([]rune, width)
-		s.colors[i] = make([]Color, width)
-		s.isBackground[i] = make([]bool, width)
+		f.chars[i] = make([]rune, width)
+		f.colors[i] = make([]Color, width)
+		f.isBackground[i] = make([]bool, width)
+		for j := 0; j < width; j++ {
+			f.isBackground[i][j] = true
+		}
 	}
+	return f
+}
+
+// Screen manages the terminal display buffer.
+type Screen struct {
+	height, width int
+	previousFrame Frame
+	mu            sync.RWMutex
+}
+
+// NewScreen creates a new Screen instance.
+func NewScreen(height, width int) *Screen {
+	s := &Screen{
+		height: height,
+		width:  width,
+	}
+	s.previousFrame = NewFrame(height, width)
 	return s
 }
 
-// deepCopy creates a full, independent copy of the Screen's data.
-func (s *Screen) deepCopy(target *Screen) {
-	target.mu.Lock()
-	defer target.mu.Unlock()
-
-	target.height = s.height
-	target.width = s.width
-	target.chars = make([][]rune, s.height)
-	target.colors = make([][]Color, s.height)
-	target.isBackground = make([][]bool, s.height)
-
-	for i := 0; i < s.height; i++ {
-		target.chars[i] = make([]rune, s.width)
-		target.colors[i] = make([]Color, s.width)
-		target.isBackground[i] = make([]bool, s.width) // Fix applied here
-		copy(target.chars[i], s.chars[i])
-		copy(target.colors[i], s.colors[i])
-		copy(target.isBackground[i], s.isBackground[i])
-	}
-}
-
-// checkAndResize checks for terminal size changes and resizes the screen buffer.
-func (s *Screen) checkAndResize() bool {
-	newHeight, newWidth, err := getTerminalSize()
-	if err != nil {
-		return false
-	}
-	if newHeight == s.height && newWidth == s.width {
-		return false
-	}
-	s.resize(newHeight, newWidth)
-	return true
-}
-
-// resize updates the screen buffer dimensions.
-func (s *Screen) resize(newHeight, newWidth int) {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-
-	newChars := make([][]rune, newHeight)
-	newColors := make([][]Color, newHeight)
-	newIsBackground := make([][]bool, newHeight)
-
-	minHeight := min(s.height, newHeight)
-	minWidth := min(s.width, newWidth)
-
-	for i := 0; i < newHeight; i++ {
-		newChars[i] = make([]rune, newWidth)
-		newColors[i] = make([]Color, newWidth)
-		newIsBackground[i] = make([]bool, newWidth)
-		for j := 0; j < newWidth; j++ {
-			if i < minHeight && j < minWidth {
-				newChars[i][j] = s.chars[i][j]
-				newColors[i][j] = s.colors[i][j]
-				newIsBackground[i][j] = s.isBackground[i][j]
-			} else {
-				newChars[i][j] = ' '
-				newColors[i][j] = Color{}
-				newIsBackground[i][j] = true
-			}
-		}
-	}
-
-	s.chars = newChars
-	s.colors = newColors
-	s.isBackground = newIsBackground
-	s.height, s.width = newHeight, newWidth
-}
-
-// clear resets the screen buffer to the background state.
-func (s *Screen) clear() {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	for i := 0; i < s.height; i++ {
-		for j := 0; j < s.width; j++ {
-			s.chars[i][j] = ' '
-			s.isBackground[i][j] = true
-		}
-	}
-}
-
-// renderChanges outputs only the changed parts of the screen buffer to the terminal.
-func (s *Screen) renderChanges(previous *Screen) {
+// renderFrame outputs only the changed parts of the frame to the terminal.
+func (s *Screen) renderFrame(currentFrame Frame) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
-	if previous.height != s.height || previous.width != s.width {
-		s.renderFull() // Force full redraw on resize
+	// If the terminal size has changed, force a full render.
+	if s.previousFrame.height != currentFrame.height || s.previousFrame.width != currentFrame.width {
+		s.renderFull(currentFrame)
+		s.previousFrame = currentFrame
 		return
 	}
 
@@ -358,29 +290,28 @@ func (s *Screen) renderChanges(previous *Screen) {
 	colorSet := false
 	dirty := false
 
-	// Iterate through the screen to find changes
-	for row := 0; row < s.height; row++ {
-		for col := 0; col < s.width; col++ {
+	for row := 0; row < currentFrame.height; row++ {
+		for col := 0; col < currentFrame.width; col++ {
 			// Check if the character or color has changed
-			if s.chars[row][col] != previous.chars[row][col] || s.colors[row][col] != previous.colors[row][col] {
+			if currentFrame.chars[row][col] != s.previousFrame.chars[row][col] || currentFrame.colors[row][col] != s.previousFrame.colors[row][col] {
 				dirty = true
 				// Move cursor to the changed position
 				builder.WriteString(fmt.Sprintf("\x1b[%d;%dH", row+1, col+1))
 
-				// Apply new color if necessary
-				if s.isBackground[row][col] {
+				if currentFrame.isBackground[row][col] {
 					if colorSet {
 						builder.WriteString("\x1b[0m")
 						colorSet = false
 					}
+					builder.WriteRune(' ') // CRITICAL FIX: Add a space to clear the character
 				} else {
-					if !colorSet || s.colors[row][col] != currentColor {
-						builder.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", s.colors[row][col].R, s.colors[row][col].G, s.colors[row][col].B))
-						currentColor = s.colors[row][col]
+					if !colorSet || currentFrame.colors[row][col] != currentColor {
+						builder.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", currentFrame.colors[row][col].R, currentFrame.colors[row][col].G, currentFrame.colors[row][col].B))
+						currentColor = currentFrame.colors[row][col]
 						colorSet = true
 					}
+					builder.WriteRune(currentFrame.chars[row][col])
 				}
-				builder.WriteRune(s.chars[row][col])
 			}
 		}
 	}
@@ -389,10 +320,11 @@ func (s *Screen) renderChanges(previous *Screen) {
 		builder.WriteString("\x1b[0m") // Reset colors at the end
 		io.WriteString(os.Stdout, builder.String())
 	}
+	s.previousFrame = currentFrame
 }
 
-// renderFull outputs the entire screen buffer to the terminal.
-func (s *Screen) renderFull() {
+// renderFull outputs the entire frame to the terminal.
+func (s *Screen) renderFull(frame Frame) {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -402,23 +334,23 @@ func (s *Screen) renderFull() {
 	var currentColor Color
 	colorSet := false
 
-	for row := 0; row < s.height; row++ {
-		for col := 0; col < s.width; col++ {
-			if s.isBackground[row][col] {
+	for row := 0; row < frame.height; row++ {
+		for col := 0; col < frame.width; col++ {
+			if frame.isBackground[row][col] {
 				if colorSet {
 					builder.WriteString("\x1b[0m")
 					colorSet = false
 				}
 			} else {
-				if !colorSet || s.colors[row][col] != currentColor {
-					builder.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", s.colors[row][col].R, s.colors[row][col].G, s.colors[row][col].B))
-					currentColor = s.colors[row][col]
+				if !colorSet || frame.colors[row][col] != currentColor {
+					builder.WriteString(fmt.Sprintf("\x1b[38;2;%d;%d;%dm", frame.colors[row][col].R, frame.colors[row][col].G, frame.colors[row][col].B))
+					currentColor = frame.colors[row][col]
 					colorSet = true
 				}
 			}
-			builder.WriteRune(s.chars[row][col])
+			builder.WriteRune(frame.chars[row][col])
 		}
-		if row < s.height-1 {
+		if row < frame.height-1 {
 			builder.WriteString("\r\n")
 		}
 	}
@@ -507,7 +439,6 @@ func main() {
 	ctx, cancel := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer cancel()
 
-	// Updated to handle zero-sized terminal, a critical edge case
 	height, width, err := getTerminalSize()
 	if err != nil {
 		fmt.Printf("Error: Could not get terminal size: %v\n", err)
@@ -526,11 +457,12 @@ func main() {
 	// Create the DropFactory and inject it into the MatrixEngine
 	dropFactory := NewRandomDropFactory(randGen, height)
 	engine := NewMatrixEngine(ctx, height, width, cfg.BaseColor, cfg.Density, randGen, dropFactory)
-	previousScreen := NewScreen(height, width)
+	screen := NewScreen(height, width)
 
 	// Initial render
-	engine.screen.renderFull()
-	engine.screen.deepCopy(previousScreen)
+	initialFrame := engine.generateFrame()
+	screen.renderFull(initialFrame)
+	screen.previousFrame = initialFrame
 
 	lastFrameTime := time.Now()
 
@@ -542,7 +474,11 @@ func main() {
 		default:
 			now := time.Now()
 			elapsed := now.Sub(lastFrameTime)
-			engine.updateAndRender(previousScreen)
+
+			// Generate the new frame and then render it.
+			currentFrame := engine.generateFrame()
+			screen.renderFrame(currentFrame)
+
 			timeToSleep := frameDuration - elapsed
 			if timeToSleep > 0 {
 				time.Sleep(timeToSleep)
