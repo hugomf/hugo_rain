@@ -2,6 +2,8 @@
 
 A customizable terminal animation that simulates the iconic "digital rain" effect from The Matrix. This project is built in Go and uses ANSI escape codes to render a dynamic, color-fading character stream directly in your terminal, providing a lightweight and visually engaging experience.
 
+![A screenshot of the matrix code animation](images/image.png)
+
 ## ✨ Features
 
 - **Customizable:** Change the character set, color theme, speed, and density of the drops.
