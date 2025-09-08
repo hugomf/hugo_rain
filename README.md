@@ -1,4 +1,4 @@
-# HuGo Rain Matrix Animation 💻
+# Gotrix / Matrix Animation 💻
 
 A customizable terminal animation that simulates the iconic "digital rain" effect from The Matrix. This project is built in Go and uses ANSI escape codes to render a dynamic, color-fading character stream directly in your terminal, providing a lightweight and visually engaging experience.
 
@@ -22,7 +22,7 @@ A customizable terminal animation that simulates the iconic "digital rain" effec
 
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/your-username/your-repo-name.git](https://github.com/your-username/your-repo-name.git)
+    git clone https://github.com/hugomf/hugo_rain.git
     cd your-repo-name
     ```
 
