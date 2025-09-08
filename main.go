@@ -1,5 +1,5 @@
 // main.go
-// Terminal Matrix rain – refactored for cleaner boundaries while staying in one file.
+// Terminal Matrix rain – Final Version merging the best of both.
 package main
 
 import (
@@ -190,17 +190,19 @@ type Engine struct {
 	randGen       *rand.Rand
 	factory       DropFactory
 	sizeFn        TermSizeFunc
+	frameBuffer   *Frame // Holds the reusable frame buffer
 }
 
 func NewEngine(cfg *Config, r *rand.Rand, factory DropFactory, sizeFn TermSizeFunc) *Engine {
 	e := &Engine{
-		height:    0,
-		width:     0,
-		baseColor: cfg.BaseColor,
-		density:   cfg.Density,
-		randGen:   r,
-		factory:   factory,
-		sizeFn:    sizeFn,
+		height:      0,
+		width:       0,
+		baseColor:   cfg.BaseColor,
+		density:     cfg.Density,
+		randGen:     r,
+		factory:     factory,
+		sizeFn:      sizeFn,
+		frameBuffer: nil, // Will be initialized on first resize
 	}
 	e.trailColors = e.calcTrailColors(6)
 	return e
@@ -238,6 +240,7 @@ func (e *Engine) Resize(h, w int) {
 		}
 	}
 	e.drops = newDrops
+	e.frameBuffer = NewFrame(h, w) // Reallocate the buffer when resizing
 }
 
 func (e *Engine) calcTrailColors(steps int) []Color {
@@ -250,14 +253,19 @@ func (e *Engine) calcTrailColors(steps int) []Color {
 	return c
 }
 
-func (e *Engine) NextFrame(frame *Frame) {
-	frame.clear()
+func (e *Engine) NextFrame() *Frame {
+	if h, w, err := e.sizeFn(); err == nil && (h != e.height || w != e.width) {
+		e.Resize(h, w)
+	}
+
+	e.frameBuffer.clear()
 	for col, dd := range e.drops {
 		for i := range dd {
 			e.updateDrop(&dd[i])
-			e.drawDrop(&dd[i], frame, col)
+			e.drawDrop(&dd[i], e.frameBuffer, col)
 		}
 	}
+	return e.frameBuffer
 }
 
 func (e *Engine) updateDrop(d *Drop) {
@@ -367,7 +375,6 @@ func (s *Screen) Draw(f *Frame) {
 	} else {
 		s.deltaRender(f)
 	}
-	// Make a copy of the current frame to use as the previous frame next time
 	if s.previousFrame == nil || s.previousFrame.height != f.height || s.previousFrame.width != f.width {
 		s.previousFrame = NewFrame(f.height, f.width)
 	}
@@ -437,7 +444,6 @@ func (s *Screen) deltaRender(f *Frame) {
 	}
 }
 
-// copyFrame manually copies a source frame to a destination frame.
 func (s *Screen) copyFrame(src, dst *Frame) {
 	for r := 0; r < src.height; r++ {
 		copy(dst.chars[r], src.chars[r])
@@ -479,10 +485,8 @@ func main() {
 	engine := NewEngine(cfg, rng, factory, GetTermSize)
 	screen := NewScreen(os.Stdout)
 
-	frameBuffer := NewFrame(h, w)
+	// Initial setup
 	engine.Resize(h, w)
-	engine.NextFrame(frameBuffer)
-	screen.Draw(frameBuffer)
 
 	frameDuration := time.Second / time.Duration(cfg.FPS)
 	tick := time.NewTicker(frameDuration)
@@ -493,14 +497,7 @@ func main() {
 		case <-ctx.Done():
 			return
 		case <-tick.C:
-			newH, newW, err := GetTermSize()
-			if err == nil && (newH != engine.height || newW != engine.width) {
-				engine.Resize(newH, newW)
-				frameBuffer = NewFrame(newH, newW)
-			}
-
-			engine.NextFrame(frameBuffer)
-			screen.Draw(frameBuffer)
+			screen.Draw(engine.NextFrame())
 		}
 	}
 }
