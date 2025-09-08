@@ -23,7 +23,7 @@ A customizable terminal animation that simulates the iconic "digital rain" effec
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/hugomf/hugo_rain.git
-    cd your-repo-name
+    cd hugo_rain
     ```
 
 2.  **Run the application:**
