@@ -276,7 +276,7 @@ func (s *Screen) deepCopy(target *Screen) {
 	for i := 0; i < s.height; i++ {
 		target.chars[i] = make([]rune, s.width)
 		target.colors[i] = make([]Color, s.width)
-		target.isBackground[i] = make([]bool, s.width)
+		target.isBackground[i] = make([]bool, s.width) // Fix applied here
 		copy(target.chars[i], s.chars[i])
 		copy(target.colors[i], s.colors[i])
 		copy(target.isBackground[i], s.isBackground[i])
@@ -501,25 +501,6 @@ func main() {
 		os.Exit(1)
 	}
 
-	baseColor, exists := colorThemes[strings.ToLower(cfg.ColorName)]
-	if !exists {
-		fmt.Printf("Error: Unknown color '%s'\n", cfg.ColorName)
-		os.Exit(1)
-	}
-
-	// Set character set
-	inputCharSet := strings.ToLower(cfg.CharSetString)
-	if selectedChars, exists := matrixCharSets[inputCharSet]; exists {
-		matrixRunes = selectedChars
-	} else {
-		matrixRunes = []rune(cfg.CharSetString)
-	}
-
-	if len(matrixRunes) == 0 {
-		fmt.Printf("Error: Character set string cannot be empty\n")
-		os.Exit(1)
-	}
-
 	// 2. Setup (Wiring Dependencies)
 	randGen := rand.New(rand.NewSource(time.Now().UnixNano()))
 
@@ -540,12 +521,11 @@ func main() {
 	setupTerminal()
 	defer restoreTerminal()
 
-	const targetFPS = 10
-	frameDuration := time.Second / targetFPS
+	frameDuration := time.Second / time.Duration(cfg.FPS)
 
 	// Create the DropFactory and inject it into the MatrixEngine
 	dropFactory := NewRandomDropFactory(randGen, height)
-	engine := NewMatrixEngine(ctx, height, width, baseColor, cfg.Density, randGen, dropFactory)
+	engine := NewMatrixEngine(ctx, height, width, cfg.BaseColor, cfg.Density, randGen, dropFactory)
 	previousScreen := NewScreen(height, width)
 
 	// Initial render
@@ -572,10 +552,10 @@ func main() {
 	}
 }
 
-// Configuration struct to hold parsed flags
+// Configuration struct to hold parsed flags and validated values.
 type Config struct {
-	ColorName     string
-	Speed         int
+	BaseColor     Color
+	FPS           int
 	Density       float64
 	ListOptions   bool
 	CharSetString string
@@ -585,8 +565,11 @@ type Config struct {
 func parseFlags() (*Config, error) {
 	cfg := &Config{}
 
-	flag.StringVar(&cfg.ColorName, "color", "green", "Color theme (green, amber, red, orange, blue, purple, cyan, pink, white)")
-	flag.IntVar(&cfg.Speed, "speed", 120, "Animation speed in milliseconds (10-500, lower = faster)")
+	var colorName string
+	var fps int
+
+	flag.StringVar(&colorName, "color", "green", "Color theme (green, amber, red, orange, blue, purple, cyan, pink, white)")
+	flag.IntVar(&fps, "fps", 10, "Animation speed in frames per second (1-60, higher = faster)")
 	flag.Float64Var(&cfg.Density, "density", 0.7, "Drop density (0.1-3.0, higher = more drops)")
 	flag.BoolVar(&cfg.ListOptions, "list", false, "List available options")
 	flag.StringVar(&cfg.CharSetString, "chars", "matrix", "Character set name (matrix, binary, symbols, emojis, kanji, greek) or a custom string.")
@@ -602,20 +585,41 @@ func parseFlags() (*Config, error) {
 		for name := range matrixCharSets {
 			fmt.Printf("  %s\n", name)
 		}
-		fmt.Println("\nSpeed: 10-500 milliseconds (lower = faster)")
-		fmt.Println("  Examples: 10 (insane), 20 (hyper), 30 (ultra), 50 (very fast), 80 (fast), 120 (normal)")
+		fmt.Println("\nFPS: 1-60 (higher = faster)")
+		fmt.Println("  Examples: 1 (very slow), 10 (normal), 30 (fast), 60 (very fast)")
 		fmt.Println("\nDensity: 0.1-3.0 (higher = more drops)")
 		fmt.Println("  Examples: 0.5 (light), 0.7 (normal), 1.0 (full), 1.5 (heavy), 2.0 (intense), 3.0 (maximum)")
 		fmt.Println("\nCharacter Set: Provide a named set (e.g., --chars kanji) or a custom string (e.g., --chars \"012345\")")
 		os.Exit(0)
 	}
 
-	if cfg.Speed < 10 || cfg.Speed > 500 {
-		return nil, errors.New(fmt.Sprintf("speed must be between 10-500 milliseconds (got %d)", cfg.Speed))
+	// Validate color
+	baseColor, exists := colorThemes[strings.ToLower(colorName)]
+	if !exists {
+		return nil, errors.New(fmt.Sprintf("unknown color '%s'", colorName))
 	}
+	cfg.BaseColor = baseColor
 
+	// Validate FPS
+	if fps < 1 || fps > 60 {
+		return nil, errors.New(fmt.Sprintf("fps must be between 1-60 (got %d)", fps))
+	}
+	cfg.FPS = fps
+
+	// Validate density
 	if cfg.Density < 0.1 || cfg.Density > 3.0 {
 		return nil, errors.New(fmt.Sprintf("density must be between 0.1-3.0 (got %.1f)", cfg.Density))
+	}
+
+	// Set character set
+	if selectedChars, exists := matrixCharSets[strings.ToLower(cfg.CharSetString)]; exists {
+		matrixRunes = selectedChars
+	} else {
+		matrixRunes = []rune(cfg.CharSetString)
+	}
+
+	if len(matrixRunes) == 0 {
+		return nil, errors.New("character set string cannot be empty")
 	}
 
 	return cfg, nil
